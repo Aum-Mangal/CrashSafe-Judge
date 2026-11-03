@@ -1,0 +1,2 @@
+# Linux tools fail on Windows line endings, so keep LF everywhere
+* text=auto eol=lf

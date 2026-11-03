@@ -1,0 +1,69 @@
+=== Probe 1: memory bomb (256 MB limit, program asks for 1 GB)
+--- oom-score-adj: default
+cgroup: /sys/fs/cgroup/system.slice/docker-7e75cf688da0cc36170c9f71a6fccd77e043bc947b5eec3567992c0ee10f1b18.scope
+touched 192 MB
+exec exit code: 128
+wsl : waiting on pid 2: waiting on PID 2 in sandbox 
+"7e75cf688da0cc36170c9f71a6fccd77e043bc947b5eec3567992c0ee10f1b18": urpc method "containerManager.WaitPID" failed: EOF
+At line:1 char:323
++ ... UTF8 = '1'; wsl -d Ubuntu-24.04 -u root -- bash /mnt/c/Users/Saran/Do ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (waiting on pid ...ID" failed: EOF:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+container after: status=exited oomkilled=true exit=137
+memory.events: cgroup gone
+next exec: Error response from daemon: container 7e75cf688da0cc36170c9f71a6fccd77e043bc947b5eec3567992c0ee10f1b18 is not running
+kernel OOM victim: Killed process 2932 (gvisor_sentry) total-vm:3552996kB, anon-rss:7680kB, file-rss:448kB, shmem-rss:128kB, UID:0 pgtables:240kB oom_score_adj:0
+--- oom-score-adj: -1000
+cgroup: /sys/fs/cgroup/system.slice/docker-b4889c702de484c1d48199b29d7f808a9399bc1ca22d5ddde1c24450e884871d.scope
+touched 192 MB
+exec exit code: 124
+container after: status=running oomkilled=true exit=0
+memory.events: oom_kill 4 
+next exec: 
+kernel OOM victim: Killed process 3130 (runsc-fd-parkin) total-vm:8kB, anon-rss:0kB, file-rss:0kB, shmem-rss:0kB, UID:0 pgtables:12kB oom_score_adj:-998
+
+=== Probe 2: --ulimit nproc=64, program forks 200 children
+fork 63 failed: Resource temporarily unavailable
+exec exit code: 0
+container after: status=running oomkilled=false exit=0
+
+=== Probe 3: --pids-limit, program forks 200 children
+idle sandbox uses 31 host pids
+limit 32: exec exit 128, 'OCI runtime exec failed: executing processes for container: executing command "/probe/forker 200" in sandbox: out of memory', container status=running oomkilled=false exit=0
+limit 64: exec exit 128, 'waiting on pid 2: waiting on PID 2 in sandbox "5cb0cff453f651245209e3d4e4249214258343fecfca85ad620aea2b0d91bf27": urpc method "containerManager.WaitPID" failed: EOF', container status=exited oomkilled=false exit=2
+limit 128: exec exit 128, 'waiting on pid 2: waiting on PID 2 in sandbox "d5effb9f25ff0b4704d6d3af99e9ff43718f2c795e310fac24455e8c6f312891": urpc method "containerManager.WaitPID" failed: EOF', container status=exited oomkilled=false exit=2
+limit 256: exec exit 128, 'waiting on pid 2: waiting on PID 2 in sandbox "4668c0254dd5a89eff51bb7662d2cb4dbdce26dca749744f207a001561f32d6b": urpc method "containerManager.WaitPID" failed: EOF', container status=exited oomkilled=false exit=2
+
+=== Probe 4: do background processes survive between tests?
+test 1 left background pid 3
+processes before cleanup:
+PID   USER     COMMAND
+    1 nobody   sleep infinity
+    3 nobody   sleep 1000
+    4 nobody   ps -o pid,user,args
+kill(-1) sent
+processes after kill(-1):
+PID   USER     COMMAND
+    1 nobody   sleep infinity
+    3 nobody   [sleep]
+    6 nobody   ps -o pid,user,args
+container after: status=running oomkilled=false exit=0
+
+=== Probe 5: does wait4 report the real CPU time and memory?
+runc cpu run 1: cpu_ms=570 wall_ms=580 maxrss_kb=524 status=0 | cgroup_cpu_ms=599
+runc cpu run 2: cpu_ms=466 wall_ms=469 maxrss_kb=524 status=0 | cgroup_cpu_ms=490
+runc cpu run 3: cpu_ms=509 wall_ms=516 maxrss_kb=524 status=0 | cgroup_cpu_ms=572
+runc cpu run 4: cpu_ms=558 wall_ms=563 maxrss_kb=524 status=0 | cgroup_cpu_ms=585
+runc cpu run 5: cpu_ms=520 wall_ms=524 maxrss_kb=524 status=0 | cgroup_cpu_ms=551
+runc memory (touches 128 MB): cpu_ms=116 wall_ms=118 maxrss_kb=131656 status=0
+runsc cpu run 1: cpu_ms=530 wall_ms=559 maxrss_kb=2072 status=0 | cgroup_cpu_ms=582
+runsc cpu run 2: cpu_ms=560 wall_ms=585 maxrss_kb=2424 status=0 | cgroup_cpu_ms=601
+runsc cpu run 3: cpu_ms=610 wall_ms=641 maxrss_kb=2032 status=0 | cgroup_cpu_ms=661
+runsc cpu run 4: cpu_ms=530 wall_ms=550 maxrss_kb=2572 status=0 | cgroup_cpu_ms=564
+runsc cpu run 5: cpu_ms=530 wall_ms=553 maxrss_kb=1228 status=0 | cgroup_cpu_ms=563
+runsc memory (touches 128 MB): cpu_ms=120 wall_ms=124 maxrss_kb=133156 status=0
+SCRIPT EXIT: 0
+
+[exited with code 0]
