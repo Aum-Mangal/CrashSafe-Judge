@@ -1,0 +1,50 @@
+# Runs every test, including the adversarial suite and Gate 1, inside real gVisor sandboxes.
+# The chaos test is left out (pyproject.toml), because it takes minutes.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://judge:judge@127.0.0.1:55432/judge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The runner already has Docker, so only gVisor is added. reload, not restart,
+      # so nothing Docker is already running gets stopped.
+      - name: Install gVisor
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/gvisor.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+            | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update
+          sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl reload docker
+          # Swap would let a sandbox go past its memory limit
+          sudo swapoff -a
+          docker run --rm --runtime=runsc alpine:3.20 uname -r
+
+      - name: Start Postgres
+        run: docker compose --progress quiet -f deploy/compose.dev.yml up -d --wait
+
+      - name: Build sandbox images
+        run: bash scripts/build-images.sh
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Apply migrations
+        run: python -m db.migrate
+
+      - name: Test
+        run: pytest -v

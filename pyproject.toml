@@ -20,4 +20,9 @@ packages = ["core", "db", "worker"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["sandbox: needs Docker, gVisor and the judge images"]
+# The chaos test takes minutes, so it only runs when asked for with -m chaos
+addopts = "-m 'not chaos'"
+markers = [
+    "sandbox: needs Docker, gVisor and the judge images",
+    "chaos: long crash test, run on purpose with -m chaos",
+]

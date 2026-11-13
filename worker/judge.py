@@ -29,20 +29,44 @@ class Test:
     hidden: bool = False
 
 
-async def judge(pool: asyncpg.Pool, claim: Claim) -> Result:
-    """Returns the job's result. Raises DockerError if the infrastructure failed."""
+class _Sandboxes:
+    """The sandboxes of one job, so every one of them can be removed when the job ends."""
+
+    def __init__(self, claim: Claim, instance: str):
+        self.claim = claim
+        self.instance = instance
+        self.open: list[Sandbox] = []
+
+    async def new(self, language: str, memory_mb: int) -> Sandbox:
+        box = await Sandbox.create(language, memory_mb, self.claim.job_id, self.claim.token, self.instance)
+        self.open.append(box)
+        return box
+
+    async def close(self, box: Sandbox) -> None:
+        await box.remove()
+        self.open.remove(box)
+
+    async def close_all(self) -> None:
+        for box in self.open:
+            await box.remove()
+
+
+async def judge(pool: asyncpg.Pool, claim: Claim, instance: str) -> Result:
+    """Returns the job's result. Raises DockerError if the infrastructure failed.
+
+    instance names this worker's database; its sandboxes carry it as a label (worker/sandbox.py).
+    """
     limits, checker_kind, tests = await _plan(pool, claim)
-    boxes: list[Sandbox] = []
+    boxes = _Sandboxes(claim, instance)
     try:
         prepared = await _prepare(claim, limits, boxes)
         if isinstance(prepared, Result):
             return prepared  # compile error
-        box, argv = prepared
-        return await _run_tests(claim, box, argv, limits, checker_kind, tests)
+        box, argv, keep = prepared
+        return await _run_tests(claim, box, argv, keep, limits, checker_kind, tests)
     finally:
         # Runs on success, failure and cancellation alike, so no sandbox outlives its job
-        for box in boxes:
-            await box.remove()
+        await boxes.close_all()
 
 
 async def _plan(pool: asyncpg.Pool, claim: Claim) -> tuple[Limits, str, list[Test]]:
@@ -67,33 +91,29 @@ async def _plan(pool: asyncpg.Pool, claim: Claim) -> tuple[Limits, str, list[Tes
     return limits, problem["checker"], tests
 
 
-async def _new_box(claim: Claim, language: str, memory_mb: int, boxes: list[Sandbox]) -> Sandbox:
-    box = await Sandbox.create(language, memory_mb, claim.job_id, claim.token)
-    boxes.append(box)
-    return box
-
-
-async def _prepare(claim: Claim, limits: Limits, boxes: list[Sandbox]) -> tuple[Sandbox, list[str]] | Result:
-    """Gets the program ready to run. Returns (sandbox, command), or a CE result."""
+async def _prepare(
+    claim: Claim, limits: Limits, boxes: _Sandboxes
+) -> tuple[Sandbox, list[str], list[str]] | Result:
+    """Gets the program ready to run. Returns (sandbox, command, files to keep in /work), or a CE result."""
     if claim.language == "cpp":
         binary = await _compile_cpp(claim, boxes)
         if isinstance(binary, Result):
             return binary
-        box = await _new_box(claim, "cpp", limits.memory_mb, boxes)
+        box = await boxes.new("cpp", limits.memory_mb)
         await box.write_file("/work/a.out", binary, executable=True)
-        return box, ["/work/a.out"]
+        return box, ["/work/a.out"], ["a.out"]
 
-    box = await _new_box(claim, "python", limits.memory_mb, boxes)
+    box = await boxes.new("python", limits.memory_mb)
     await box.write_file("/work/main.py", claim.source.encode())
     syntax = await box.run([PYTHON, "-m", "py_compile", "/work/main.py"], b"", COMPILE, address_space=False)
     if _failed(syntax):
         return Result("CE", compile_log=syntax.stderr or "Syntax check failed.")
-    return box, [PYTHON, "-I", "-B", "/work/main.py"]
+    return box, [PYTHON, "-I", "-B", "/work/main.py"], ["main.py"]
 
 
-async def _compile_cpp(claim: Claim, boxes: list[Sandbox]) -> bytes | Result:
+async def _compile_cpp(claim: Claim, boxes: _Sandboxes) -> bytes | Result:
     """Compiles in its own sandbox, because the compiler needs more memory than the program may use."""
-    box = await _new_box(claim, "cpp", COMPILE.memory_mb, boxes)
+    box = await boxes.new("cpp", COMPILE.memory_mb)
     await box.write_file("/work/main.cpp", claim.source.encode())
     report = await box.run(
         ["/usr/bin/g++", *CPP_FLAGS, "-o", "/work/a.out", "/work/main.cpp"], b"", COMPILE, address_space=False
@@ -106,15 +126,20 @@ async def _compile_cpp(claim: Claim, boxes: list[Sandbox]) -> bytes | Result:
         return Result("CE", compile_log=report.stderr or "Compilation failed.")
 
     binary = await box.read_file("/work/a.out")
-    await box.remove()
-    boxes.remove(box)
+    await boxes.close(box)
     if len(binary) > MAX_BINARY_BYTES:
         return Result("CE", compile_log="The compiled program is larger than 32 MB.")
     return binary
 
 
 async def _run_tests(
-    claim: Claim, box: Sandbox | None, argv: list[str], limits: Limits, checker_kind: str, tests: list[Test]
+    claim: Claim,
+    box: Sandbox | None,
+    argv: list[str],
+    keep: list[str],
+    limits: Limits,
+    checker_kind: str,
+    tests: list[Test],
 ) -> Result:
     per_test: list[dict] = []
     verdict = failed_test = None
@@ -127,7 +152,8 @@ async def _run_tests(
             per_test.append({"verdict": "skipped"})
             continue
 
-        report = await box.run(argv, test.input.encode(), limits)
+        # Each test starts with only the program in /work (DECISIONS.md, 80)
+        report = await box.run(argv, test.input.encode(), limits, keep=keep)
         cpu_used += report.cpu_ms
         output_ok = None
         if test.expected is not None:

@@ -1,0 +1,8 @@
+
+tests/chaos/test_chaos.py::test_no_job_is_lost_or_judged_twice 
+500 jobs, 3 workers, 42 SIGKILLs, 230 s
+statuses: {'completed': 499, 'dead': 1}
+attempts per job: {1: 465, 2: 33, 3: 2}
+PASSED
+
+================= 1 passed, 73 deselected in 230.85s (0:03:50) =================

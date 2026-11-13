@@ -14,12 +14,16 @@
 //   --out-kb N   stdout limit; the program is killed once it's passed (default 16384)
 //   --nproc N    process limit for uid 65534 (default 64)
 //   --cwd DIR    working directory (default /work)
+//   --keep NAME  empty the working directory before the run, except NAME (repeatable)
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <grp.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,10 +40,14 @@
 #define STDERR_CAP (64 * 1024)
 #define FILE_SIZE_CAP (16L << 20)
 #define DRAIN_MS 200
+#define MAX_KEEP 8
 
 struct options {
     long cpu_ms, wall_ms, mem_mb, out_kb, nproc;
     const char *cwd;
+    const char *keep[MAX_KEEP];
+    int keep_count;
+    bool clean;
     char **argv;
 };
 
@@ -52,8 +60,8 @@ struct capture {
     size_t err_len;
 };
 
-enum { STEP_LIMITS, STEP_USER, STEP_CWD, STEP_EXEC, STEP_COUNT };
-static const char *const STEP_NAMES[STEP_COUNT] = {"limits", "user", "cwd", "exec"};
+enum { STEP_LIMITS, STEP_IPC, STEP_USER, STEP_CWD, STEP_EXEC, STEP_COUNT };
+static const char *const STEP_NAMES[STEP_COUNT] = {"limits", "ipc namespace", "user", "cwd", "exec"};
 
 static long now_ms(void) {
     struct timespec t;
@@ -84,7 +92,7 @@ static long parse_long(const char *s) {
 }
 
 static struct options parse_args(int argc, char **argv) {
-    struct options o = {1000, 3000, 0, 16384, 64, "/work", NULL};
+    struct options o = {.cpu_ms = 1000, .wall_ms = 3000, .out_kb = 16384, .nproc = 64, .cwd = "/work"};
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--") == 0) {
             if (i + 1 < argc) o.argv = argv + i + 1;
@@ -99,6 +107,14 @@ static struct options parse_args(int argc, char **argv) {
         else if (strcmp(argv[i], "--nproc") == 0) target = &o.nproc;
         else if (strcmp(argv[i], "--cwd") == 0) {
             o.cwd = argv[++i];
+            continue;
+        } else if (strcmp(argv[i], "--keep") == 0) {
+            if (o.keep_count == MAX_KEEP) {
+                errno = E2BIG;
+                fail("too many --keep");
+            }
+            o.keep[o.keep_count++] = argv[++i];
+            o.clean = true;
             continue;
         } else break;
         *target = parse_long(argv[++i]);
@@ -171,6 +187,11 @@ static void run_child(const struct options *o, int out_fd, int err_fd, int setup
         if (setrlimit(limits[i].resource, &r) != 0) child_fail(setup_fd, STEP_LIMITS);
     }
 
+    // A private IPC namespace: shared memory, message queues and semaphores the program creates
+    // vanish with its last process, so none of them can carry data into the next test.
+    // Needs SYS_ADMIN, which only this root process holds; the program loses it at setuid.
+    if (unshare(CLONE_NEWIPC) != 0) child_fail(setup_fd, STEP_IPC);
+
     // Drop to the sandbox user last. From here on, the program can't touch the runner.
     if (setgroups(0, NULL) != 0 || setgid(SANDBOX_GID) != 0 || setuid(SANDBOX_UID) != 0) {
         child_fail(setup_fd, STEP_USER);
@@ -215,6 +236,37 @@ static void pump(struct capture *c, long wait_ms) {
     }
 }
 
+static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+    (void)st;
+    (void)type;
+    (void)ftw;
+    remove(path);  // nftw goes depth first, so a directory is already empty when it's removed
+    return 0;
+}
+
+// Empties the working directory except the kept names, so nothing one test wrote is seen by the
+// next. Runs as the sandbox user, which owns /work; the runner can't bypass that ownership.
+static void clean_working_directory(const struct options *o) {
+    pid_t helper = fork();
+    if (helper == 0) {
+        if (setgid(SANDBOX_GID) != 0 || setuid(SANDBOX_UID) != 0) _exit(1);
+        DIR *dir = opendir(o->cwd);
+        if (!dir) _exit(1);
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            bool keep = strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+            for (int k = 0; k < o->keep_count && !keep; k++) keep = strcmp(name, o->keep[k]) == 0;
+            if (keep) continue;
+            char path[4096];
+            snprintf(path, sizeof path, "%s/%s", o->cwd, name);
+            nftw(path, remove_entry, 16, FTW_DEPTH | FTW_PHYS);
+        }
+        _exit(0);
+    }
+    if (helper > 0) waitpid(helper, NULL, 0);
+}
+
 // Kills every process still running as the sandbox user. The helper switches to that uid
 // first, so kill(-1) reaches exactly those processes; Linux spares the caller and PID 1.
 static void kill_sandbox_user_processes(void) {
@@ -236,6 +288,8 @@ int main(int argc, char **argv) {
     // Orphans of the program are handed to the runner instead of PID 1,
     // so the runner can kill and reap every one of them
     if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) fail("prctl");
+
+    if (o.clean) clean_working_directory(&o);
 
     int out_pipe[2], err_pipe[2], setup_pipe[2];
     if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe2(setup_pipe, O_CLOEXEC) != 0) fail("pipe");

@@ -12,7 +12,7 @@ import contextlib
 import logging
 import os
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from uuid import UUID
 
@@ -37,6 +37,8 @@ class Settings:
     poll: float
     reap_every: float
     reconcile_every: float
+    # Labels this worker's sandboxes and limits reconciliation to them. Empty means the database name.
+    instance: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -51,16 +53,26 @@ class Settings:
             poll=seconds("POLL_SECONDS", 2),
             reap_every=seconds("REAP_SECONDS", 15),
             reconcile_every=seconds("RECONCILE_SECONDS", 60),
+            instance=os.environ.get("JUDGE_INSTANCE", ""),
         )
 
 
-async def run_job(pool: asyncpg.Pool, s: Settings, claim: Claim) -> None:
-    """Judges one job while heartbeating, then commits a result, a cancellation or a release."""
-    judging = asyncio.create_task(judge(pool, claim))
+async def run_job(pool: asyncpg.Pool, s: Settings, claim: Claim, cancel_signal: asyncio.Event) -> None:
+    """Judges one job while heartbeating, then commits a result, a cancellation or a release.
+
+    cancel_signal is set by NOTIFY job_cancel. It triggers an immediate heartbeat, which is what
+    actually reads the cancel, so a lost notification only delays the cancel to the next heartbeat.
+    """
+    judging = asyncio.create_task(judge(pool, claim, s.instance))
     while True:
-        done, _ = await asyncio.wait({judging}, timeout=s.heartbeat)
-        if done:
+        signalled = asyncio.create_task(cancel_signal.wait())
+        done, _ = await asyncio.wait(
+            {judging, signalled}, timeout=s.heartbeat, return_when=asyncio.FIRST_COMPLETED
+        )
+        signalled.cancel()
+        if judging in done:
             break
+        cancel_signal.clear()
         try:
             async with pool.acquire() as conn:
                 cancel = await queue.heartbeat(conn, claim.job_id, s.worker_id, claim.token, s.lease)
@@ -98,7 +110,9 @@ async def run_job(pool: asyncpg.Pool, s: Settings, claim: Claim) -> None:
         log.warning("finished %s too late: another worker owns it now, so the result was dropped", claim.job_id)
 
 
-async def claim_loop(pool: asyncpg.Pool, s: Settings, wake: asyncio.Event) -> None:
+async def claim_loop(
+    pool: asyncpg.Pool, s: Settings, wake: asyncio.Event, cancel_signals: dict[str, asyncio.Event]
+) -> None:
     while True:
         try:
             async with pool.acquire() as conn:
@@ -114,7 +128,11 @@ async def claim_loop(pool: asyncpg.Pool, s: Settings, wake: asyncio.Event) -> No
                 await asyncio.wait_for(wake.wait(), s.poll)
             continue
         log.info("claimed %s (%s, attempt %d, token %d)", claimed.job_id, claimed.kind, claimed.attempt, claimed.token)
-        await run_job(pool, s, claimed)
+        cancel_signal = cancel_signals[str(claimed.job_id)] = asyncio.Event()
+        try:
+            await run_job(pool, s, claimed, cancel_signal)
+        finally:
+            del cancel_signals[str(claimed.job_id)]
 
 
 async def reaper_loop(pool: asyncpg.Pool, s: Settings) -> None:
@@ -131,10 +149,18 @@ async def reaper_loop(pool: asyncpg.Pool, s: Settings) -> None:
         await asyncio.sleep(s.reap_every)
 
 
-async def reconcile(pool: asyncpg.Pool) -> None:
-    """Removes sandboxes whose job no longer runs under the same token with a live lease."""
+async def reconcile(pool: asyncpg.Pool, instance: str) -> None:
+    """Removes this instance's sandboxes whose job no longer runs under the same token.
+
+    An expired lease alone is not enough: the owner may only be slow, and its next heartbeat
+    can still renew the lease. Deciding that a lease is dead is the reaper's job. Once the
+    reaper retires the job, its status or token changes and the sandbox is removed here.
+
+    Sandboxes of other instances are never touched: their jobs live in another database,
+    so from here they would all look like orphans.
+    """
     code, out, _ = await docker(
-        "ps", "-a", "--filter", "label=judge.job",
+        "ps", "-a", "--filter", f"label=judge.instance={instance}",
         "--format", '{{.ID}} {{.Label "judge.job"}} {{.Label "judge.token"}}',
         timeout=20,
     )
@@ -148,8 +174,7 @@ async def reconcile(pool: asyncpg.Pool) -> None:
             continue
         async with pool.acquire() as conn:
             live = await conn.fetchval(
-                """SELECT 1 FROM jobs
-                   WHERE id = $1 AND status = 'running' AND fencing_token = $2 AND lease_until > now()""",
+                "SELECT 1 FROM jobs WHERE id = $1 AND status = 'running' AND fencing_token = $2",
                 job_id,
                 token_value,
             )
@@ -161,7 +186,7 @@ async def reconcile(pool: asyncpg.Pool) -> None:
 async def reconcile_loop(pool: asyncpg.Pool, s: Settings) -> None:
     while True:
         try:
-            await reconcile(pool)
+            await reconcile(pool, s.instance)
         except (DockerError, *DB_ERRORS) as e:
             log.warning("reconciliation failed: %s", e)
         await asyncio.sleep(s.reconcile_every)
@@ -171,12 +196,23 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = Settings.from_env()
     pool = await asyncpg.create_pool(s.dsn, min_size=2, max_size=4)
+    if not s.instance:
+        s = replace(s, instance=await pool.fetchval("SELECT current_database()"))
     wake = asyncio.Event()
+    cancel_signals: dict[str, asyncio.Event] = {}  # job id -> signal, for the job this worker is judging
+
+    def on_cancel(conn, pid, channel, job_id):
+        if job_id in cancel_signals:
+            cancel_signals[job_id].set()
+
     listener = await asyncpg.connect(s.dsn)
     await listener.add_listener("job_new", lambda *_: wake.set())
-    log.info("worker %s started", s.worker_id)
+    await listener.add_listener("job_cancel", on_cancel)
+    log.info("worker %s started for instance %s", s.worker_id, s.instance)
     try:
-        await asyncio.gather(claim_loop(pool, s, wake), reaper_loop(pool, s), reconcile_loop(pool, s))
+        await asyncio.gather(
+            claim_loop(pool, s, wake, cancel_signals), reaper_loop(pool, s), reconcile_loop(pool, s)
+        )
     finally:
         await listener.close()
         await pool.close()

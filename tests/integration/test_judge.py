@@ -2,9 +2,7 @@
 
 import pytest
 
-from core import queue
-from helpers import insert_job, insert_problem
-from worker.judge import judge
+from helpers import insert_problem, judge_job
 
 pytestmark = pytest.mark.sandbox
 
@@ -17,13 +15,6 @@ int main() {
     while (true) { char* p = new char[16 << 20]; memset(p, 1, 16 << 20); blocks.push_back(p); }
 }
 """
-
-
-async def judge_job(db, pool, **job):
-    job_id = await insert_job(db, **job)
-    claimed = await queue.claim(db, "test-worker")
-    assert claimed.job_id == job_id
-    return await judge(pool, claimed)
 
 
 async def sum_problem(db):

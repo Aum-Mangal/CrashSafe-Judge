@@ -1,8 +1,22 @@
 """Small helpers shared by the tests."""
 
+import asyncio
 import hashlib
 import json
+import os
+import sys
 import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+# Short timings so crash tests take seconds. Production uses the defaults in worker/main.py.
+FAST_WORKER = {
+    "LEASE_SECONDS": "4",
+    "HEARTBEAT_SECONDS": "1",
+    "REAP_SECONDS": "1",
+    "RECONCILE_SECONDS": "2",
+    "POLL_SECONDS": "0.5",
+}
 
 
 async def insert_job(
@@ -49,3 +63,49 @@ async def expire_lease(conn, job_id):
 async def skip_backoff(conn, job_id):
     """Pretends the retry backoff has passed."""
     await conn.execute("UPDATE jobs SET not_before = now() WHERE id = $1", job_id)
+
+
+async def judge_job(db, pool, **job):
+    """Inserts a job, claims it and judges it in a real sandbox, returning the Result."""
+    from core import queue
+    from worker.judge import judge
+
+    job_id = await insert_job(db, **job)
+    claimed = await queue.claim(db, "test-worker")
+    assert claimed.job_id == job_id
+    return await judge(pool, claimed, await db.fetchval("SELECT current_database()"))
+
+
+async def start_worker(dsn, name, log_dir, settings=FAST_WORKER):
+    """Starts a real worker process, logging to log_dir/<name>.log."""
+    log = open(log_dir / f"{name}.log", "wb")
+    env = {**os.environ, **settings, "DATABASE_URL": dsn, "WORKER_ID": name}
+    return await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "worker.main", cwd=ROOT, env=env, stdout=log, stderr=log
+    )
+
+
+async def sandboxes_for(job_id=None):
+    """IDs of sandbox containers for one job, or for every job when job_id is None."""
+    label = f"judge.job={job_id}" if job_id else "judge.job"
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "ps", "-aq", "--filter", f"label={label}", stdout=asyncio.subprocess.PIPE
+    )
+    out, _ = await proc.communicate()
+    return out.split()
+
+
+async def eventually(check, timeout, what, log_dir=None):
+    """Polls check() until it's true, or fails with the workers' logs attached."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await check():
+            return
+        await asyncio.sleep(0.2)
+    logs = ""
+    if log_dir is not None:
+        logs = "\n".join(
+            f"--- {p.name}\n{p.read_text(errors='replace')[-3000:]}" for p in sorted(log_dir.glob("*.log"))
+        )
+    raise AssertionError(f"timed out waiting for {what}\n{logs}")

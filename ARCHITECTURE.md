@@ -1,6 +1,6 @@
 # Architecture: Crash-Safe Code Execution & Verification Engine
 
-Status: v3.1 (3 Nov 2026), hosted on the laptop. Build window: 2 to 30 Nov 2026.
+Status: v3.2 (13 Nov 2026), hosted on the laptop. Started 2 Nov 2026. Dates were dropped on 13 Nov: the work follows the order and gates in the roadmap.
 Cost target: ₹0 recurring. Availability: best-effort, no uptime guarantee.
 Why anything changed from v2: see [DECISIONS.md](DECISIONS.md). Build order: see [ROADMAP.md](ROADMAP.md).
 
@@ -37,7 +37,7 @@ Humans (browser, REST, polling)      AI agents (MCP Streamable HTTP, stateless)
                          ^
           claim / heartbeat / finish (fenced)
                          |
-             Worker 1        Worker 2              Docker socket + /sys/fs/cgroup (ro)
+             Worker 1        Worker 2              host processes with the Docker socket
                  |               |
          compile container  ->  run container      gVisor, one pair per job
          no network, read-only rootfs, cgroup limits
@@ -64,7 +64,7 @@ The judge runs on the laptop. Oracle was dropped on 3 Nov because it only accept
 | Runtime | Docker Engine, gVisor (runsc), PostgreSQL 16, FastAPI | Open source |
 | Language | Python 3.12 (API, worker), C (judge-runner) | asyncio for all concurrency |
 | Public access | Cloudflare Quick Tunnel (`cloudflared`) | No account, domain or open ports. Random URL that changes on restart |
-| Stable URL (optional) | Decided by 21 Nov (§12) | Only needed for the uptime check and the MCP Registry |
+| Stable URL (optional) | Decided in week 3 of the roadmap (§12) | Only needed for the uptime check and the MCP Registry |
 | CI | GitHub Actions, public repo, `ubuntu-24.04` | Same architecture (amd64) as production |
 | Backups | Encrypted nightly `pg_dump` copied into the OneDrive folder | OneDrive syncs it off the laptop. Keep at most 14 |
 | Tooling | pytest, k6, MCP Inspector, OBS | Free |
@@ -116,7 +116,8 @@ jobs             id UUID default gen_random_uuid()      -- also the MCP taskId
                  priority SMALLINT                      -- 0 contest, 1 practice, 2 agent
                  status ('queued'|'running'|'completed'|'cancelled'|'dead')
                  attempts, max_attempts (3), not_before
-                 worker_id, lease_until, fencing_token BIGINT, container_id
+                 worker_id, lease_until, fencing_token BIGINT
+                 container_id                           -- unused: container labels replaced it. To be dropped
                  cancel_requested BOOL, last_error
                  submitted_at, created_at, started_at, finished_at, expires_at
                  rejudge_of UUID NULL, superseded BOOL DEFAULT false
@@ -169,7 +170,7 @@ Guarantees, stated exactly in the README:
 **Create** (one transaction)
 1. Lock the owner's row.
 2. If the idempotency key exists for this owner: same `request_hash` returns the existing job, different hash returns 409.
-3. Rate-limit upsert. Over the limit: reject with retry-after, keeping the counter.
+3. Rate-limit upsert. Over the limit: reject with retry-after. The refusal rolls the transaction back, so refused requests aren't counted.
 4. Owner's queued + running ≥ `max_inflight`: reject.
 5. Global queued count over the cap: reject.
 6. Insert as queued. NOTIFY `job_new`.
@@ -204,7 +205,9 @@ Zero rows means the lease is lost: kill the containers and abandon the work.
 
 It also deletes jobs past `expires_at`. That removes source, stdin, tests and, by cascade, the result. Contest jobs have no expiry.
 
-**Reconciliation** (worker startup + every 60 s): list containers labelled `judge.job`. Keep one only if its job is `running`, its `judge.token` label equals the current `fencing_token`, and the lease is live. Kill and remove the rest. The token check catches an old orphan while a retry of the same job runs.
+**Reconciliation** (worker startup + every 60 s): list containers labelled with this worker's `judge.instance`, which is its database name unless `JUDGE_INSTANCE` says otherwise. Keep one only if its job is `running` and its `judge.token` label equals the current `fencing_token`. Kill and remove the rest. The token check catches an old orphan while a retry of the same job runs. The instance label stops workers for different databases on one Docker host from removing each other's sandboxes (DECISIONS.md, 90).
+
+Reconciliation does not look at the lease. A worker with an expired lease may only be slow, and its next heartbeat can still renew it. Only the reaper decides a lease is dead. Once it retires the job, the status or token changes and the sandbox is removed on the next sweep (DECISIONS.md, 88).
 
 ---
 
@@ -218,21 +221,25 @@ It also deletes jobs past `expires_at`. That removes source, stdin, tests and, b
 ```
 --runtime=runsc --network none --read-only
 --tmpfs /work:rw,exec,size=64m,uid=65534,gid=65534,mode=0700
+--ipc none --tmpfs /tmp:ro,size=1m      (removes Docker's writable /dev/shm and gVisor's writable /tmp)
 --memory X --memory-swap X              (X = limit + 64 MB; gVisor itself used about 13 MB)
 --pids-limit 512                        (host backstop only; hitting it kills the sandbox. 64 guest processes used 162)
 --ulimit nproc=64                       (guest limit; gVisor returns EAGAIN, proven in probe 2)
 --cpus 1
 --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL
+--cap-add SYS_ADMIN                     (root runner only: a new IPC namespace per run; the program holds no capabilities)
 --security-opt no-new-privileges
 --user 65534
 --label judge.job=<id> --label judge.token=<fencing_token>
 ```
 No host mounts. No secrets in the environment. The container's main process is `sleep`.
 
+`/work` is the only place the program can write, and the runner empties it before every test. That is what makes test isolation hold (DECISIONS.md, 86).
+
 **judge-runner:** a small static C program, baked into the read-only image. Every compile and test runs through it, started with `docker exec -i --user 0`. Killing `docker exec` does not stop the process inside, so limits must be enforced from inside the sandbox.
 
 For each execution it:
-1. Forks the program with its own session, rlimits (CPU, address space, processes, file size, open files, no core dumps), a fixed environment and uid 65534.
+1. Empties `/work` except the program's own files, so nothing from an earlier test is visible. Then forks the program with its own session, its own IPC namespace (so shared memory and message queues die with it), rlimits (CPU, address space, processes, file size, open files, no core dumps), a fixed environment and uid 65534.
 2. Enforces the wall limit (3 × time limit, or the compile limit) with SIGKILL.
 3. Forwards stdout up to the output limit, then kills the program.
 4. Collects the exit status and `wait4` usage (CPU time, peak RSS).
@@ -242,7 +249,7 @@ For each execution it:
 It runs as a different uid from the program. If they shared one, the submission could read the runner's file descriptors and forge its own verdict.
 
 **Per job**
-1. Create the compile container. Store its ID on the job.
+1. Create the compile container, labelled with the job ID and fencing token. The labels are how reconciliation finds it, so the ID is not stored on the job.
 2. Send source through `docker exec -i` (`docker cp` cannot reach a tmpfs).
 3. Compile: `g++ -std=c++20 -O2 -pipe` with a precompiled `bits/stdc++.h`, 10 s wall, 512 MB. In the spike, one compile took about 0.9 s and peaked at 347 MB. Failure gives CE. Python uses `py_compile` with the same CE path.
 4. Stream the binary out, remove the compile container, create the run container, stream the binary in.
@@ -265,6 +272,8 @@ It runs as a different uid from the program. If they shared one, the submission 
 
 **Blame rule:** if the submission caused it, it gets a final verdict and is never retried. Otherwise a malicious program could burn all three attempts and an IE. Only Docker errors and timeouts count as infrastructure failures.
 
+"Sandbox died" means the container still exists but has stopped. A program can cause that. A container Docker can no longer find was removed by someone else, so that is an infrastructure failure and the job is retried (DECISIONS.md, 87).
+
 If the sandbox dies during `verify_code`, the current test gets its verdict and the rest are marked `skipped`.
 
 **Docker itself can hang.** In the spike, one wedged sandbox blocked every Docker command for about 10 minutes. Every Docker call has a timeout. If `docker rm -f` times out, the worker kills that container's runsc processes directly, by container ID.
@@ -272,7 +281,7 @@ If the sandbox dies during `verify_code`, the current test gets its verdict and 
 **Never use `--oom-score-adj -1000`** on sandboxes. It caused that wedge (DECISIONS.md, probe 1).
 
 **Measurement**
-- CPU and peak memory are per test, from the runner. The container cgroup is a cross-check and a hard limit.
+- CPU and peak memory are per test, from the runner. The container cgroup is only a hard limit: the worker does not read it (DECISIONS.md, 83).
 - The output limit (default 16 MB) is for judging. The 64 KB cap is only for what gets stored.
 - Limits are calibrated with runsc in `judge-prod`. Overhead against plain runc is published.
 
@@ -284,20 +293,19 @@ If the sandbox dies during `verify_code`, the current test gets its verdict and 
 | `verify_code` | 20 tests, 2 s each, 30 s total CPU |
 | Contest submission | Problem limits, stop at first failure |
 
-**Worker concurrency:** all Docker calls are async subprocesses with timeouts. Heartbeat and the cancel listener are separate asyncio tasks and never wait behind a Docker call.
+**Worker concurrency:** all Docker calls are async subprocesses with timeouts. Judging runs as its own asyncio task, so the heartbeat never waits behind a Docker call. A cancel notification only wakes the heartbeat early.
 
 ---
 
 ## 8. Cancellation
 
 1. Cancel accepted by REST `DELETE`, `tasks/cancel`, or `cancel_run`.
-2. `UPDATE ... SET status='cancelled' WHERE id=$1 AND status='queued'`. One row means done.
-3. Zero rows: `SET cancel_requested = true WHERE status='running'`, then NOTIFY `job_cancel`.
-4. **Fast path:** the owning worker hears NOTIFY, runs `docker kill`, commits `cancelled` with the fenced update.
-5. **Fallback:** the next heartbeat returns `cancel_requested`.
-6. **Crash path:** the reaper sets `cancelled` when the lease expires.
+2. One `UPDATE` under the job's row lock decides what happens, so it cannot race with a worker claiming the job. A queued job becomes `cancelled` at once. A running job gets `cancel_requested = true`, followed by NOTIFY `job_cancel`. A finished job is left alone.
+3. **Fast path:** the owning worker hears NOTIFY and heartbeats immediately. The heartbeat reads `cancel_requested` from the database, so the notification itself is never trusted. The worker then removes its sandboxes and commits `cancelled` with the fenced update.
+4. **Fallback:** if the notification is lost, the next regular heartbeat reads `cancel_requested`.
+5. **Crash path:** the reaper sets `cancelled` when the lease expires.
 
-Published: fast-path p50/p95/p99, and the fallback bound of heartbeat interval + kill time.
+Measured on 13 Nov: 0.26 s from request to sandbox removed on the fast path (DECISIONS.md, 76). Still to publish: fast-path p50/p95/p99, and the fallback bound of heartbeat interval + kill time.
 
 ---
 
@@ -362,7 +370,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 **Defended:** resource exhaustion, network egress, filesystem escape and tampering, most kernel exploits (gVisor intercepts syscalls), tool injection (no tool accepts paths, URLs or shell), cross-client task access, hidden-test leakage, verdict forgery, early problem leakage.
 
-**Privilege split:** only workers hold the Docker socket and the cgroup filesystem. The API has neither. Workers expose no ports.
+**Privilege split:** only workers hold the Docker socket. The API does not. Workers expose no ports.
 
 **Hosting on a personal laptop raises the stakes.** A full escape to Windows needs two independent bugs: one in gVisor, then one in the Linux kernel or WSL. Mitigations:
 - Production runs in its own distro, `judge-prod`, with `[automount] enabled=false` and `[interop] enabled=false` in `/etc/wsl.conf`. Tested on 4 Nov: root there cannot start Windows programs, even after re-registering the handler. **Root can still mount `C:\` by hand** (`mount -t drvfs`), so automount off removes casual access but is not a boundary against root (DECISIONS.md, 55). Becoming root in `judge-prod` takes a gVisor escape followed by a kernel exploit from inside gVisor's own seccomp jail, or a compromise of the worker.
@@ -389,7 +397,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 | Job fails 3× | `dead` + IE result |
 | Crash during cancel | Reaper sets `cancelled`, never requeues |
 | Missed NOTIFY | 2 s claim poll, heartbeat covers cancel |
-| Postgres restart | API 503 via readiness, workers reconnect and re-LISTEN, reaper waits one heartbeat |
+| Postgres restart | API 503 via readiness, workers reconnect through their pool, reaper waits one heartbeat. Re-LISTEN is not built yet (§16) |
 | API restart | Clients retry with the same idempotency key |
 | Docker hang | Timeouts on every call, then release with backoff |
 | Program OOM | Program killed, MLE, sandbox survives |
@@ -406,7 +414,9 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 ## 12. Deployment and availability
 
-**Compose services:** `cloudflared`, `api`, `postgres`, `worker-1`, `worker-2`, all with `restart: unless-stopped`. Workers mount `/var/run/docker.sock` and `/sys/fs/cgroup:ro`. Sandbox images `judge-cpp` and `judge-python` are amd64.
+**Compose services:** `cloudflared`, `api`, `postgres`, all with `restart: unless-stopped`. Sandbox images `judge-cpp` and `judge-python` are amd64.
+
+**Workers run on the host, outside Compose** (DECISIONS.md, 72). Their last resort for a wedged sandbox is killing its runsc processes, which needs host process IDs. Each worker is one process judging one job at a time. Compose cannot restart them, so each gets a systemd unit with `Restart=always` (planned for week 4).
 
 **Production distro:** `deploy/bootstrap.sh` creates `judge-prod` from a clean Ubuntu 24.04 image and writes its `wsl.conf` (systemd on, automount off, interop off). It then runs `setup-host.sh`, clones the repo from GitHub, restores the latest backup and starts Compose. Code reaches `judge-prod` only through `git pull`, because it cannot see `C:\`.
 
@@ -417,7 +427,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 **Public URL.** A Cloudflare Quick Tunnel needs no account or domain. Its limits are a random URL that changes when `cloudflared` restarts, 200 in-flight requests, no Server-Sent Events and no uptime guarantee. The design already polls and uses Streamable HTTP, so these are acceptable for the contest.
 
-By 21 Nov, decide whether a stable URL is worth it. Only the hourly uptime check and the MCP Registry need one. Options to check then: Tailscale Funnel (free personal plan, `*.ts.net` address), or a free student domain with a named Cloudflare Tunnel. If neither works, cut those two features.
+In week 3, decide whether a stable URL is worth it. Only the hourly uptime check and the MCP Registry need one. Options to check then: Tailscale Funnel (free personal plan, `*.ts.net` address), or a free student domain with a named Cloudflare Tunnel. If neither works, cut those two features.
 
 **Availability is best-effort.**
 1. `bootstrap.sh` rebuilds `judge-prod` in under 30 minutes.
@@ -441,7 +451,8 @@ By 21 Nov, decide whether a stable URL is worth it. Only the hourly uptime check
 | Isolation | Fork bomb, memory bomb, infinite loop, sleep, network, fs write, `/etc/passwd`, 1 GB output, compile bomb, under runsc |
 | Blame rule | Each attack gets a final verdict with `attempts = 1` and never IE |
 | Verdict integrity | Program tries to forge or tamper with the runner's report |
-| Test isolation | Background process from test 1 is gone before test 2 |
+| Test isolation | Background process and files from test 1 are gone before test 2; `/work` is the only writable place |
+| Blame rule, other side | A sandbox removed from outside raises an infrastructure error, not a verdict |
 | Hidden tests stay hidden | No API path returns hidden data; stderr echo stores nothing |
 | Problem visibility | Contest problem returns 404 before the start, on REST and MCP |
 | Cancellation | Fast-path percentiles, fallback bound, crash-during-cancel never re-executes, 0 leaked containers |
@@ -490,12 +501,13 @@ The runner sets `RLIMIT_AS` to the problem limit plus 48 MB, below the cgroup's 
 judge/
   api/         app.py, auth.py, routes.py, ratelimit.py, pages/
   mcp/         server.py, tools.py, tasks.py, schemas.py
-  core/        jobs.py, queue.py, reaper.py, reconcile.py
-  worker/      main.py, sandbox.py, cgroup.py, checker.py, verdict.py
+  core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel)
+  worker/      main.py (claim, reaper and reconcile loops), judge.py, sandbox.py, checker.py, verdict.py
   runner/      judge_runner.c, Makefile
   admin/       __main__.py
-  db/          models.py, migrations/
-  deploy/      docker-compose.yml, setup-host.sh, bootstrap.sh, backup.sh, keepalive/, images/Dockerfile
+  db/          migrate.py, migrations/
+  deploy/      compose.dev.yml, setup-host.sh, wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1,
+               check-isolation.sh, images/Dockerfile. Planned: docker-compose.yml, bootstrap.sh, backup.sh, keepalive/
   spike/       probes and results
   loadtest/    k6/
   agent_eval/  optional agent benchmark
@@ -504,3 +516,16 @@ judge/
   tests/       unit/ integration/ adversarial/ chaos/ mcp/ leakage/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
+
+`api/`, `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
+
+---
+
+## 16. Known gaps (review of 13 Nov)
+
+Places where the code does not yet do what this document claims. Each is removed from this list when it is fixed and tested.
+
+| Gap | Effect | Planned fix |
+|---|---|---|
+| The worker's LISTEN connection is never restored after a Postgres restart | Jobs still move through polling, but instant wake-up and fast cancel are lost until the worker restarts | Reconnect and re-LISTEN |
+| A database error during the final commit ends the worker process | The finished verdict is lost and the job uses up an attempt | Retry the fenced commit until the lease would have expired |

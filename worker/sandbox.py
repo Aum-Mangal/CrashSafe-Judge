@@ -95,21 +95,30 @@ async def kill_runsc_processes(container_id: str) -> None:
 
 
 class Sandbox:
-    """One gVisor container, labelled with its job and fencing token so reconciliation can find orphans."""
+    """One gVisor container, labelled with its instance, job and fencing token so reconciliation
+    can find orphans. The instance names the database the job lives in, so workers for different
+    databases on one Docker host never touch each other's sandboxes."""
 
     def __init__(self, container_id: str):
         self.id = container_id
 
     @classmethod
-    async def create(cls, language: str, memory_mb: int, job_id, token: int) -> "Sandbox":
+    async def create(cls, language: str, memory_mb: int, job_id, token: int, instance: str) -> "Sandbox":
         memory = f"{memory_mb + CGROUP_HEADROOM_MB}m"
         code, out, err = await docker(
             "run", "-d", "--runtime=runsc", "--network", "none", "--read-only",
             "--tmpfs", f"/work:rw,exec,size=64m,uid={SANDBOX_UID},gid={SANDBOX_UID},mode=0700",
+            # /work must be the only writable place, because it's the only one emptied between tests.
+            # Docker adds a writable /dev/shm and gVisor a writable /tmp unless told otherwise.
+            "--ipc", "none", "--tmpfs", "/tmp:ro,size=1m",
             "--memory", memory, "--memory-swap", memory,
             "--pids-limit", "512", "--ulimit", "nproc=64:64", "--cpus", "1",
             "--cap-drop", "ALL", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "KILL",
+            # Only the root runner uses SYS_ADMIN, to give each program its own IPC namespace.
+            # The program loses every capability when the runner drops it to the sandbox user.
+            "--cap-add", "SYS_ADMIN",
             "--security-opt", "no-new-privileges", "--user", SANDBOX_UID,
+            "--label", f"judge.instance={instance}",
             "--label", f"judge.job={job_id}", "--label", f"judge.token={token}",
             IMAGES[language], "sleep", "infinity",
             timeout=30,
@@ -134,17 +143,21 @@ class Sandbox:
             raise DockerError(f"reading {path} failed: {err.decode(errors='replace').strip()[-300:]}")
         return out
 
-    async def run(self, argv: list[str], stdin: bytes, limits: Limits, address_space: bool = True) -> Report:
+    async def run(
+        self, argv: list[str], stdin: bytes, limits: Limits, address_space: bool = True, keep: list[str] = ()
+    ) -> Report:
         """Runs one program through judge-runner and returns what happened.
 
         address_space=False leaves RLIMIT_AS off, for the compiler, which reserves far more
-        address space than it uses.
+        address space than it uses. keep, when given, makes the runner empty /work first,
+        except those names, so earlier runs leave nothing behind.
         """
         memory = limits.memory_mb + ADDRESS_SPACE_HEADROOM_MB if address_space else 0
+        keep_args = [arg for name in keep for arg in ("--keep", name)]
         code, out, err = await docker(
             "exec", "-i", "--user", "0", self.id, RUNNER,
             "--cpu-ms", str(limits.cpu_ms), "--wall-ms", str(limits.wall_ms),
-            "--mem-mb", str(memory), "--out-kb", str(limits.output_kb),
+            "--mem-mb", str(memory), "--out-kb", str(limits.output_kb), *keep_args,
             "--", *argv,
             stdin=stdin, timeout=limits.wall_ms / 1000 + 20,
         )
@@ -172,11 +185,14 @@ class Sandbox:
 
     async def _death(self) -> tuple[bool, bool]:
         """Returns (died, OOM-killed). Docker can report a dead sandbox as running for about
-        0.3 s, so this polls for up to 3 s before deciding."""
+        0.3 s, so this polls for up to 3 s before deciding.
+
+        A sandbox the program killed is stopped but still exists. If Docker can't find it at all,
+        someone removed it, and that is never the submission's doing."""
         for _ in range(12):
-            code, out, _ = await docker("inspect", "-f", "{{.State.Running}} {{.State.OOMKilled}}", self.id, timeout=10)
+            code, out, err = await docker("inspect", "-f", "{{.State.Running}} {{.State.OOMKilled}}", self.id, timeout=10)
             if code != 0:
-                return True, False
+                raise DockerError(f"sandbox is gone: {err.decode(errors='replace').strip()[-300:]}")
             running, oom = out.decode().split()
             if running == "false":
                 return True, oom == "true"

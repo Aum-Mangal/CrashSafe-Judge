@@ -18,7 +18,7 @@ docker pull -q "$IMAGE" > /dev/null
 SANDBOX_FLAGS=(
   --read-only --tmpfs /work:rw,exec,size=64m,uid=65534,gid=65534,mode=0700
   --pids-limit 512 --ulimit nproc=64:64 --cpus 1
-  --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add SYS_ADMIN
   --security-opt no-new-privileges
 )
 
