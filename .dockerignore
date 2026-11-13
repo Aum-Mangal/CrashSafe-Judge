@@ -1,0 +1,3 @@
+# The sandbox images only need the runner's source
+*
+!runner/judge_runner.c

@@ -123,12 +123,14 @@ static bool write_all(int fd, const char *buf, size_t n) {
     return true;
 }
 
+// Bytes from 0x80 up pass through unchanged, so UTF-8 text (like g++'s curly quotes) stays intact.
+// The worker decodes with replacement, so invalid UTF-8 can't break the JSON either.
 static void json_escape(FILE *f, const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         if (c == '"' || c == '\\') fprintf(f, "\\%c", c);
         else if (c == '\n') fputs("\\n", f);
-        else if (c < 0x20 || c >= 0x7f) fprintf(f, "\\u%04x", c);
+        else if (c < 0x20 || c == 0x7f) fprintf(f, "\\u%04x", c);
         else fputc(c, f);
     }
 }

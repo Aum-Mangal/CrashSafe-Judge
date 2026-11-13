@@ -256,7 +256,7 @@ It runs as a different uid from the program. If they shared one, the submission 
 |---|---|
 | Runner killed the program at the output limit | OLE |
 | CPU over limit, or wall limit hit | TLE |
-| Peak RSS over the limit, or the program failed with peak RSS at 90% of the limit or more [S] | MLE |
+| Peak RSS over the limit, or the program failed with `std::bad_alloc` or `MemoryError` in stderr | MLE |
 | Sandbox died with Docker `OOMKilled` true (poll for up to 3 s) | MLE |
 | Sandbox died otherwise (fork bomb hitting the pids backstop) | RE |
 | Non-zero exit or signal | RE |
@@ -478,9 +478,9 @@ Follow-ups added after probes 1 to 5:
 - **3b:** how many host pids does a sandbox use with 64 guest processes, so the backstop can be set safely?
 - **4b:** does `--init` work under runsc and reap killed processes?
 
-All were answered on 3 and 4 Nov in the dev distro (DECISIONS.md). Still open: how Python behaves under `RLIMIT_AS`, and the exact 90% MLE threshold.
+All were answered on 3 and 4 Nov in the dev distro (DECISIONS.md).
 
-The runner sets `RLIMIT_AS` to the problem limit, so a program that asks for too much memory sees an allocation fail instead of killing the sandbox. In C++ that usually surfaces as a crash, which is why the MLE rule also counts failures close to the limit.
+The runner sets `RLIMIT_AS` to the problem limit plus 48 MB, below the cgroup's 64 MB headroom. A program can therefore pass its limit, and be judged MLE on its real peak RSS, before the cgroup could kill the sandbox. An allocation that fails at the cap surfaces as `std::bad_alloc` or `MemoryError`, which also counts as MLE (DECISIONS.md, 69). Python under this cap was tested on 13 Nov.
 
 ---
 
@@ -495,7 +495,7 @@ judge/
   runner/      judge_runner.c, Makefile
   admin/       __main__.py
   db/          models.py, migrations/
-  deploy/      docker-compose.yml, setup-host.sh, bootstrap.sh, backup.sh, keepalive/, images/{cpp,python}/
+  deploy/      docker-compose.yml, setup-host.sh, bootstrap.sh, backup.sh, keepalive/, images/Dockerfile
   spike/       probes and results
   loadtest/    k6/
   agent_eval/  optional agent benchmark

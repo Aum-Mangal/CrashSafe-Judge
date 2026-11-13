@@ -41,7 +41,7 @@ docker rm -f p3b > /dev/null
 
 echo
 echo "=== Probe 9: C++ compile time and memory, with and without the precompiled header"
-docker build -q -t judge-cpp:spike "$SPIKE/../deploy/images/cpp" > /dev/null || exit 1
+docker build -q --target cpp -t judge-cpp:spike -f "$SPIKE/../deploy/images/Dockerfile" "$SPIKE/.." > /dev/null || exit 1
 for runtime in runc runsc; do
   IMAGE=judge-cpp:spike start p9 "$runtime" --memory 1g --memory-swap 1g --cpus 1 \
     --tmpfs /work:rw,exec,size=64m,uid=65534,gid=65534,mode=0700

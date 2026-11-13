@@ -30,3 +30,10 @@ async def db(dsn):
     conn = await asyncpg.connect(dsn)
     yield conn
     await conn.close()
+
+
+@pytest.fixture
+async def pool(dsn):
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    yield pool
+    await pool.close()

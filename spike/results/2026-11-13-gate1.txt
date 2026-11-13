@@ -1,0 +1,20 @@
+Gate 1, 13 Nov 2026, dev distro. tests/integration/test_gate1_crash.py with 4 s leases and 1 s heartbeats.
+Worker A is killed with SIGKILL while its program sleeps inside the sandbox.
+
+tests/integration/test_gate1_crash.py::test_a_killed_workers_job_recovers_to_one_verdict PASSED [100%]
+19.48s call     tests/integration/test_gate1_crash.py::test_a_killed_workers_job_recovers_to_one_verdict
+====================== 1 passed, 44 deselected in 19.79s =======================
+
+--- worker-a.log
+09:11:08,070 INFO worker: worker worker-a started
+09:11:08,075 INFO worker: claimed b5489e94-a429-4f69-bb7e-9267942cc902 (submission, attempt 1, token 1)
+
+--- worker-b.log
+09:11:09,352 INFO worker: worker worker-b started
+09:11:13,366 WARNING worker: reaped b5489e94-a429-4f69-bb7e-9267942cc902: its lease expired, now queued
+09:11:13,550 WARNING worker: removing orphan sandbox c9e4513e36a1 (job b5489e94-a429-4f69-bb7e-9267942cc902, token 1)
+09:11:23,411 INFO worker: claimed b5489e94-a429-4f69-bb7e-9267942cc902 (submission, attempt 2, token 2)
+09:11:27,145 INFO worker: finished b5489e94-a429-4f69-bb7e-9267942cc902: AC
+
+The test then checked: status completed, attempts 2, worker_id worker-b, exactly one result (AC),
+and no container labelled with the job left.

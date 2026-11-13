@@ -14,6 +14,8 @@ dpkg -s python3-venv > /dev/null 2>&1 || apt-get install -y -q python3-venv > /d
 
 docker compose --progress quiet -f "$ROOT/deploy/compose.dev.yml" up -d --wait
 
+bash "$ROOT/scripts/build-images.sh"
+
 cd "$ROOT"
 "$VENV/bin/python" -m db.migrate
 "$VENV/bin/pytest" -v -p no:cacheprovider "$@"
