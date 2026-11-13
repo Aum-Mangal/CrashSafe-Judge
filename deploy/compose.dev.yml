@@ -1,0 +1,20 @@
+# Services for local development. Production uses deploy/docker-compose.yml (week 4).
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: judge
+      POSTGRES_PASSWORD: judge  # dev only; the port is bound to this machine
+      POSTGRES_DB: judge
+    ports:
+      # 55432, not 5432: Docker Desktop's documind database already answers on 5432
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "judge"]
+      interval: 2s
+      retries: 15
+
+volumes:
+  pgdata:

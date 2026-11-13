@@ -1,0 +1,55 @@
+=== judge-runner against hostile programs
+--- normal program (echoes stdin)
+stdout (12 bytes): 5 3 1 4 1 5 
+report: {"exit_code":0,"signal":0,"cpu_ms":10,"wall_ms":8,"peak_kb":2900,"timed_out":false,"output_exceeded":false,"stdout_bytes":12,"setup_error":null,"stderr":""}
+--- non-zero exit
+stdout (0 bytes): 
+report: {"exit_code":3,"signal":0,"cpu_ms":10,"wall_ms":4,"peak_kb":2104,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+--- segfault
+stdout (0 bytes): 
+report: {"exit_code":-1,"signal":11,"cpu_ms":10,"wall_ms":4,"peak_kb":2728,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+--- uses more CPU than its limit
+stdout (0 bytes): 
+report: {"exit_code":0,"signal":0,"cpu_ms":420,"wall_ms":444,"peak_kb":1336,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+--- infinite loop
+stdout (0 bytes): 
+report: {"exit_code":-1,"signal":9,"cpu_ms":2000,"wall_ms":2092,"peak_kb":1316,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+--- sleeps forever
+stdout (0 bytes): 
+report: {"exit_code":-1,"signal":9,"cpu_ms":20,"wall_ms":2001,"peak_kb":3472,"timed_out":true,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+--- output flood
+stdout (1048576 bytes): y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y y 
+report: {"exit_code":-1,"signal":9,"cpu_ms":60,"wall_ms":62,"peak_kb":3132,"timed_out":false,"output_exceeded":true,"stdout_bytes":1049602,"setup_error":null,"stderr":""}
+--- stderr with quotes
+stdout (0 bytes): 
+report: {"exit_code":1,"signal":0,"cpu_ms":10,"wall_ms":3,"peak_kb":3024,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":"say \"hi\"\n"}
+--- memory bomb with a 192 MB address-space limit (1b)
+stdout (53 bytes): touched 64 MB touched 128 MB malloc failed at 192 MB 
+report: {"exit_code":2,"signal":0,"cpu_ms":120,"wall_ms":120,"peak_kb":182528,"timed_out":false,"output_exceeded":false,"stdout_bytes":53,"setup_error":null,"stderr":""}
+sandbox after the memory bomb: status=running oomkilled=false exit=0
+--- fork bomb
+stdout (49 bytes): fork 64 failed: Resource temporarily unavailable 
+report: {"exit_code":0,"signal":0,"cpu_ms":180,"wall_ms":126,"peak_kb":2724,"timed_out":false,"output_exceeded":false,"stdout_bytes":49,"setup_error":null,"stderr":""}
+--- leaves a background process (4b)
+stdout (8 bytes): started 
+report: {"exit_code":0,"signal":0,"cpu_ms":20,"wall_ms":6,"peak_kb":3348,"timed_out":false,"output_exceeded":false,"stdout_bytes":8,"setup_error":null,"stderr":""}
+processes after cleanup:
+PID   STAT USER     COMMAND
+    1 S    nobody   sleep infinity
+   99 R    nobody   ps -o pid,stat,user,args
+--- attacks the runner (8)
+stdout (136 bytes): forge report: blocked (Permission denied) kill runner: blocked (Operation not permitted) become root
+report: {"exit_code":0,"signal":0,"cpu_ms":0,"wall_ms":4,"peak_kb":2268,"timed_out":false,"output_exceeded":false,"stdout_bytes":136,"setup_error":null,"stderr":""}
+--- program that doesn't exist
+stdout (0 bytes): 
+report: {"exit_code":127,"signal":0,"cpu_ms":10,"wall_ms":3,"peak_kb":1820,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":"exec: No such file or directory","stderr":""}
+--- environment the program sees
+stdout (71 bytes): PATH=/usr/local/bin:/usr/bin:/bin HOME=/work TMPDIR=/work LANG=C.UTF-8 
+report: {"exit_code":0,"signal":0,"cpu_ms":10,"wall_ms":4,"peak_kb":3372,"timed_out":false,"output_exceeded":false,"stdout_bytes":71,"setup_error":null,"stderr":""}
+sandbox at the end: status=running oomkilled=false exit=0
+
+=== C++ compile and run through the runner, under a 512 MB compile limit
+compile report: {"exit_code":0,"signal":0,"cpu_ms":860,"wall_ms":920,"peak_kb":216680,"timed_out":false,"output_exceeded":false,"stdout_bytes":0,"setup_error":null,"stderr":""}
+sandbox peak memory: 347 MB, state: status=running oomkilled=false exit=0
+sum 14 distinct 4
+run report: {"exit_code":0,"signal":0,"cpu_ms":10,"wall_ms":9,"peak_kb":6508,"timed_out":false,"output_exceeded":false,"stdout_bytes":18,"setup_error":null,"stderr":""}

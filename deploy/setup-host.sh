@@ -27,7 +27,7 @@ echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/gvisor.gpg] https://storage.
   > /etc/apt/sources.list.d/gvisor.list
 
 apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io runsc
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin runsc
 
 # Adds runsc as an extra Docker runtime. The default stays runc.
 runsc install

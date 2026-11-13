@@ -104,8 +104,37 @@ To be filled in during the spike. Each ARCHITECTURE.md value marked [S] gets its
 | 3 | Lowest stable `--pids-limit` | Idle sandbox uses 31 host pids. Limit 32: exec failed with a misleading "out of memory". Limits 64, 128, 256 with 200 forks: sandbox exited with code 2, not OOM | `--pids-limit` only as a high backstop. Never classify by runsc error text. Probe 3b sets the value |
 | 4 | `kill(-1)` cleanup | A background `sleep` from test 1 was still running in test 2. `kill(-1)` from uid 65534 killed it and left PID 1 alive, but it stayed a zombie because `sleep infinity` doesn't reap | Runner cleanup works. Zombies count toward `nproc`, so add `--init` (probe 4b) |
 | 5 | `wait4` accuracy | Burn test: runsc `wait4` 530–610 ms vs cgroup 563–661 ms. runc 466–570 vs 490–599. 128 MB touched: `maxrss` 133,156 KB under runsc, 131,656 KB under runc. runsc CPU times come in 10 ms steps | Runner `wait4` is the timing and memory source. Report CPU in 10 ms steps. Runs vary by about 20% on the laptop, so limits need margin and calibration |
-| 6 | Cgroup path | | |
-| 7 | gVisor memory overhead | | |
-| 8 | Capabilities with `no-new-privileges` | | |
-| 9 | Compile time | | |
-| 10 | Container and exec cost | | |
+| 6 | Cgroup path | `/sys/fs/cgroup/system.slice/docker-<id>.scope`. Docker passes `--systemd-cgroup=true` to runsc. Another container with `/sys/fs/cgroup` mounted read-only could read its `cpu.stat` | Workers find a sandbox's cgroup from its container ID |
+| 7 | gVisor memory overhead | Idle: 11 MB under runsc vs 0.7 MB under runc. With a 128 MB program: 13 MB beyond the program vs 1.7 MB | Sandbox memory = problem limit + 64 MB headroom |
+| 8 | Capabilities with `no-new-privileges` | With only `SETUID`, `SETGID` and `KILL`, the runner dropped to uid 65534. The program could not open the runner's stderr, kill the runner, or become root | Runner design confirmed |
+| 9 | Compile time | Precompiled header: about 860 ms under runsc vs 2.2 s without (warm runs; the first is slower). One compile under a 512 MB limit peaked at 347 MB | Keep the precompiled header, the 512 MB compile limit and the 10 s compile wall limit |
+| 10 | Container and exec cost | Start: 223 ms under runsc vs 224 ms under runc. One `docker exec`: 77 ms vs 111 ms | Two containers per job are affordable. Per-test cost is mostly the exec |
+| 1b | Memory limit inside the sandbox | Runner with a 192 MB `RLIMIT_AS`: `malloc` failed at 192 MB, peak 182 MB, the sandbox stayed up | The runner sets `RLIMIT_AS` to the problem limit, so most memory bombs no longer kill the sandbox. Python is still untested |
+| 3b | Host pids for 64 guest processes | `pids.peak` 162 | `--pids-limit 512` |
+| 4b | Zombies | With the runner as a child subreaper, a leftover background process was killed and reaped, with no zombie left | Drop `--init` |
+
+Raw output: `spike/results/2026-11-04-probes-6-10.txt` and `spike/results/2026-11-04-runner.txt`.
+
+## Runner decisions (4 Nov 2026)
+
+| # | Change | Why | Evidence |
+|---|---|---|---|
+| 50 | Runner reports facts; the worker decides the verdict | Keeps the code running next to untrusted programs small and easy to check | Review |
+| 51 | Runner is a child subreaper | Orphans come back to the runner, which kills and reaps all of them, so no `--init` is needed | Follow-up 4b |
+| 52 | CPU time comes from `RUSAGE_CHILDREN` after reaping | Counts every process the program started, not just the first one | Review |
+| 53 | Fixed four-variable environment | Nothing from `docker exec` leaks in, and every run sees the same environment | Runner test |
+| 54 | Setup pipe closed on exec | Separates "couldn't start" (a setup error) from "ran and exited 127" | Runner test |
+
+## judge-prod (4 Nov 2026)
+
+| # | Finding or change | Why it matters | Evidence |
+|---|---|---|---|
+| 55 | **Fix chosen: 62.** Automount off is not a boundary: root in `judge-prod` mounted `C:\` by hand with `mount -t drvfs`. Windows programs stayed blocked, even after root re-registered the handler | Root there could read your files or plant a Windows startup script. Options: run `judge-prod` under a separate standard Windows account (ACLs then hide your profile), use a VirtualBox VM, or accept the documented risk | `spike/results/2026-11-04-judge-prod.txt` |
+| 56 | Spike repeated in `judge-prod`: same results as the dev distro | The sandbox behaves the same where it will actually run | Same file |
+| 58 | Plain numbered SQL migrations with a 40-line runner, not an ORM tool | The queue's correctness lives in SQL, so the SQL should be visible and reviewed as written. Each file applies in one transaction, under an advisory lock | `tests/integration/test_schema.py` |
+| 59 | `asyncpg` as the Postgres driver | Async, fast, and supports the LISTEN/NOTIFY wake-ups the queue needs | Review |
+| 60 | Schema guarantees tested directly: one result per job, idempotency keys, lease required while running, `SKIP LOCKED` claims, priority order | These are the promises the README makes, so each has a test | 6 tests passing |
+| 62 | `judge-prod` runs under a separate standard Windows account | WSL reads `C:\` as the Windows account that started it, so Windows permissions hide your profile even through a hand-mounted drive. The account should also get its own WSL VM and kernel. You create the account by hand | **Verified 13 Nov.** As `judgehost`, root still mounted `C:\`, but reading `C:\Users\Saran` was blocked, and the kernel boot id differed from the dev distro's. As `Aum`, both were reachable and shared. `spike/results/2026-11-13-judgehost-isolation.txt` |
+| 63 | The import script feeds the check in with `bash -s` instead of copying it into the distro first | The copy step failed silently, so the first `judgehost` run used the old script and tested nothing | Same file |
+| 61 | Dev database on `127.0.0.1:55432` | Docker Desktop's `documind` database already answers on 5432 | Found when the password was rejected |
+| 57 | Code reaches `judge-prod` as a tar piped from Windows, followed by `chmod` | `judge-prod` can't see `C:\`, and Windows `tar` drops Linux permissions, so every binary first failed with "permission denied" | Same file |

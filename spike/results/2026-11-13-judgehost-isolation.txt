@@ -1,0 +1,22 @@
+Isolation check for decision 62, 13 Nov 2026. Same check script, fed in from C:\Users\Public.
+
+--- Control: judge-prod under the owner's account
+windows user: Aum
+C: drive mounted at /mnt/c: blocked
+Windows folders on PATH: blocked
+mount C: by hand as root (expected to work): REACHABLE (bad)
+read Saran's files through that mount: REACHABLE (bad)
+kernel boot id (differs between WSL virtual machines): 79c2b401-6a20-4580-a2f7-4898b0ecdd5b
+run a Windows program as root: blocked
+docker: 29.9.3, runtimes: io.containerd.runc.v2 runc runsc
+dev distro boot id: 79c2b401-6a20-4580-a2f7-4898b0ecdd5b
+
+--- judge-prod under the standard account judgehost
+windows user: judgehost
+C: drive mounted at /mnt/c: blocked
+Windows folders on PATH: blocked
+mount C: by hand as root (expected to work): REACHABLE (bad)
+read Saran's files through that mount: blocked
+kernel boot id (differs between WSL virtual machines): 8d42c886-8476-4ffc-9670-ca3186f02eeb
+run a Windows program as root: blocked
+docker: 29.9.3, runtimes: io.containerd.runc.v2 runc runsc

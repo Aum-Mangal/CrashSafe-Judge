@@ -60,7 +60,7 @@ The judge runs on the laptop. Oracle was dropped on 3 Nov because it only accept
 |---|---|---|
 | Host | The laptop: Windows 11 + WSL2 | 8 CPUs, 16 GB RAM, of which WSL2 gets about 7.8 GB |
 | Dev distro | `Ubuntu-24.04` | Windows drives mounted, for editing code |
-| Production distro | `judge-prod` | Windows drives and Windows programs switched off (§10) |
+| Production distro | `judge-prod`, under a separate standard Windows account | Windows drives and programs switched off, your files hidden by Windows permissions (§10) |
 | Runtime | Docker Engine, gVisor (runsc), PostgreSQL 16, FastAPI | Open source |
 | Language | Python 3.12 (API, worker), C (judge-runner) | asyncio for all concurrency |
 | Public access | Cloudflare Quick Tunnel (`cloudflared`) | No account, domain or open ports. Random URL that changes on restart |
@@ -218,9 +218,8 @@ It also deletes jobs past `expires_at`. That removes source, stdin, tests and, b
 ```
 --runtime=runsc --network none --read-only
 --tmpfs /work:rw,exec,size=64m,uid=65534,gid=65534,mode=0700
---memory X --memory-swap X              (X = limit + gVisor overhead [S])
---init                                  (reaps killed processes so zombies don't use up nproc [S])
---pids-limit 1024                       (host backstop only; hitting it kills the sandbox [S])
+--memory X --memory-swap X              (X = limit + 64 MB; gVisor itself used about 13 MB)
+--pids-limit 512                        (host backstop only; hitting it kills the sandbox. 64 guest processes used 162)
 --ulimit nproc=64                       (guest limit; gVisor returns EAGAIN, proven in probe 2)
 --cpus 1
 --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL
@@ -233,11 +232,11 @@ No host mounts. No secrets in the environment. The container's main process is `
 **judge-runner:** a small static C program, baked into the read-only image. Every compile and test runs through it, started with `docker exec -i --user 0`. Killing `docker exec` does not stop the process inside, so limits must be enforced from inside the sandbox.
 
 For each execution it:
-1. Forks the program with its own session, rlimits (CPU, file size, open files, no core dumps) and uid 65534.
+1. Forks the program with its own session, rlimits (CPU, address space, processes, file size, open files, no core dumps), a fixed environment and uid 65534.
 2. Enforces the wall limit (3 × time limit, or the compile limit) with SIGKILL.
 3. Forwards stdout up to the output limit, then kills the program.
 4. Collects the exit status and `wait4` usage (CPU time, peak RSS).
-5. Kills every remaining uid 65534 process, so nothing survives into the next test.
+5. Kills and reaps every remaining uid 65534 process, so nothing survives into the next test. The runner is a child subreaper, so orphans are handed to it rather than to PID 1, and no zombies are left.
 6. Writes one JSON report line to its own stderr.
 
 It runs as a different uid from the program. If they shared one, the submission could read the runner's file descriptors and forge its own verdict.
@@ -245,7 +244,7 @@ It runs as a different uid from the program. If they shared one, the submission 
 **Per job**
 1. Create the compile container. Store its ID on the job.
 2. Send source through `docker exec -i` (`docker cp` cannot reach a tmpfs).
-3. Compile: `g++ -std=c++20 -O2 -pipe` with a precompiled `bits/stdc++.h`, `TMPDIR=/work`, 10 s wall **[S]**, 512 MB. Failure gives CE. Python uses `py_compile` with the same CE path.
+3. Compile: `g++ -std=c++20 -O2 -pipe` with a precompiled `bits/stdc++.h`, 10 s wall, 512 MB. In the spike, one compile took about 0.9 s and peaked at 347 MB. Failure gives CE. Python uses `py_compile` with the same CE path.
 4. Stream the binary out, remove the compile container, create the run container, stream the binary in.
 5. For each test, pipe input to the runner and read the output and report.
 6. Contest submissions stop at the first failure. `verify_code` runs all tests.
@@ -257,7 +256,7 @@ It runs as a different uid from the program. If they shared one, the submission 
 |---|---|
 | Runner killed the program at the output limit | OLE |
 | CPU over limit, or wall limit hit | TLE |
-| Peak RSS from the runner over the limit | MLE |
+| Peak RSS over the limit, or the program failed with peak RSS at 90% of the limit or more [S] | MLE |
 | Sandbox died with Docker `OOMKilled` true (poll for up to 3 s) | MLE |
 | Sandbox died otherwise (fork bomb hitting the pids backstop) | RE |
 | Non-zero exit or signal | RE |
@@ -366,13 +365,15 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 **Privilege split:** only workers hold the Docker socket and the cgroup filesystem. The API has neither. Workers expose no ports.
 
 **Hosting on a personal laptop raises the stakes.** A full escape to Windows needs two independent bugs: one in gVisor, then one in the Linux kernel or WSL. Mitigations:
-- Production runs in its own distro, `judge-prod`, with `[automount] enabled=false` and `[interop] enabled=false` in `/etc/wsl.conf`. Even root there cannot see `C:\` or start Windows programs.
+- Production runs in its own distro, `judge-prod`, with `[automount] enabled=false` and `[interop] enabled=false` in `/etc/wsl.conf`. Tested on 4 Nov: root there cannot start Windows programs, even after re-registering the handler. **Root can still mount `C:\` by hand** (`mount -t drvfs`), so automount off removes casual access but is not a boundary against root (DECISIONS.md, 55). Becoming root in `judge-prod` takes a gVisor escape followed by a kernel exploit from inside gVisor's own seccomp jail, or a compromise of the worker.
+- **Fix chosen on 4 Nov (DECISIONS.md, 62):** `judge-prod` is registered under a separate standard Windows account. A hand-mounted `C:\` only shows what that account may read, and Windows permissions keep your profile out of reach. It also gets its own WSL virtual machine and kernel, away from the dev distro. Both were verified on 13 Nov with `deploy/check-isolation.sh`.
 - `judge-prod` holds no personal files, browser data or keys other than the project's own.
 - The tunnel exposes only the API. The laptop opens no inbound ports.
 
 **Not defended, stated honestly:**
 - gVisor bugs, or a kernel exploit that bypasses gVisor.
-- All WSL2 distros share one Linux kernel. A kernel exploit from `judge-prod` could reach the dev distro, which does mount `C:\`. Stopping the dev distro during the contest (`wsl --terminate Ubuntu-24.04`) reduces this.
+- All WSL2 distros of one Windows account share one Linux kernel. Under its own account, `judge-prod` runs in a separate virtual machine from the dev distro (verified 13 Nov: different kernel boot ids).
+- The judge account can still read and write whatever any standard user can, such as `C:\Users\Public` and parts of `C:\ProgramData`.
 - Worker compromise equals compromise of `judge-prod`. The Docker socket is root-equivalent.
 - Timing side channels. Failing test index and timing are visible by design, as on all judges. Rate limits reduce this but do not remove it.
 
@@ -409,7 +410,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 **Production distro:** `deploy/bootstrap.sh` creates `judge-prod` from a clean Ubuntu 24.04 image and writes its `wsl.conf` (systemd on, automount off, interop off). It then runs `setup-host.sh`, clones the repo from GitHub, restores the latest backup and starts Compose. Code reaches `judge-prod` only through `git pull`, because it cannot see `C:\`.
 
-**Keeping it running.** WSL stops a distro when nothing on the Windows side is using it, and systemd does not prevent that. A Task Scheduler task at logon keeps a long-lived `wsl.exe -d judge-prod` process running. WSL only runs while you are logged in to Windows. Week 4 verifies that:
+**Keeping it running.** WSL stops a distro when nothing on the Windows side is using it, and systemd does not prevent that. A Task Scheduler task at logon keeps a long-lived `wsl.exe -d judge-prod` process running. WSL only runs while its Windows account is signed in, so the judge account stays signed in in the background (fast user switching) or a scheduled task runs as it. Week 4 verifies that:
 - the distro survives closing every terminal
 - everything comes back after a reboot and login
 - sleep is off while plugged in, and Windows Update is paused over contest week
@@ -451,7 +452,7 @@ By 21 Nov, decide whether a stable URL is worth it. Only the hourly uptime check
 | MCP correctness | Opt-in gets a handle; no opt-in gets a result or job_id; reconnect retrieves the result; cross-client access denied |
 | Throughput | k6 at 1, 2 and 3 workers in `judge-prod` |
 | Disaster recovery | `judge-prod` deleted, rebuilt from script and backup in N minutes |
-| Windows isolation | From root in `judge-prod`, `C:\` and Windows programs are unreachable |
+| Windows isolation | `deploy/check-isolation.sh` as `judgehost`: Windows programs unreachable, your files unreadable even through a hand-mounted `C:\`, separate kernel from the dev distro |
 
 ---
 
@@ -477,7 +478,9 @@ Follow-ups added after probes 1 to 5:
 - **3b:** how many host pids does a sandbox use with 64 guest processes, so the backstop can be set safely?
 - **4b:** does `--init` work under runsc and reap killed processes?
 
-Run in the dev distro first, then confirm in `judge-prod`. Results go in DECISIONS.md.
+All were answered on 3 and 4 Nov in the dev distro (DECISIONS.md). Still open: how Python behaves under `RLIMIT_AS`, and the exact 90% MLE threshold.
+
+The runner sets `RLIMIT_AS` to the problem limit, so a program that asks for too much memory sees an allocation fail instead of killing the sandbox. In C++ that usually surfaces as a crash, which is why the MLE rule also counts failures close to the limit.
 
 ---
 

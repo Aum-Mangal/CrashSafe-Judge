@@ -1,0 +1,26 @@
+=== Probe 6: where is a sandbox's cgroup, and can a worker container read it?
+host path: /sys/fs/cgroup/system.slice/docker-d3c1653c8a536d5b537f65df134f05dc31592efb6147afdd136705258fb91d0f.scope
+seen from another container: usage_usec 84783
+
+=== Probe 7: how much memory does gVisor itself use?
+runc: idle 728 KB, peak with a 128 MB program 132760 KB, extra beyond the program 1688 KB
+runsc: idle 11252 KB, peak with a 128 MB program 144096 KB, extra beyond the program 13024 KB
+
+=== Follow-up 3b: host pids used while the program runs 64 processes
+fork 63 failed: Resource temporarily unavailable
+host pids.peak: 162
+
+=== Probe 9: C++ compile time and memory, with and without the precompiled header
+runc pch: compile ms: 2008 873 883 | first header line: ! /usr/include/x86_64-linux-gnu/c++/13/bits/stdc++.h.gch
+runc nopch: compile ms: 6485 2149 1858 | first header line: . /work/nopch/bits/stdc++.h
+runc peak memory during compiles: 457 MB
+runc program output: sum 14 distinct 4
+runsc pch: compile ms: 1426 858 854 | first header line: ! /usr/include/x86_64-linux-gnu/c++/13/bits/stdc++.h.gch
+runsc nopch: compile ms: 3001 2285 2157 | first header line: . /work/nopch/bits/stdc++.h
+runsc peak memory during compiles: 497 MB
+runsc program output: sum 14 distinct 4
+
+=== Probe 10: cost of starting a sandbox and of one docker exec
+runc: start 224 ms per container, exec 111 ms per command
+runsc: start 223 ms per container, exec 77 ms per command
+SCRIPT EXIT: 0
