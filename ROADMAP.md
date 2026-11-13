@@ -1,6 +1,6 @@
-# Roadmap: 2 to 30 November 2026
+# Roadmap
 
-Assumes 3 to 4 hours a day, 6 days a week. Sundays are catch-up days.
+**Dates dropped on 13 Nov.** We fell behind, so the work now follows this order and its gates, with no deadlines. The day labels below only show the order. The contest date is set once Gate 3 passes.
 
 Each week ends with a **gate**: a demo that must work before the next week starts. If a gate fails, we fix it or use the cut list. We don't move on with it broken.
 

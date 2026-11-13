@@ -1,11 +1,10 @@
 """Guarantees the schema enforces by itself (ARCHITECTURE.md §4 to §6)."""
 
-import hashlib
-
 import asyncpg
 import pytest
 
 from db.migrate import migrate
+from helpers import insert_job
 
 # The claim query from ARCHITECTURE.md §6
 CLAIM = """
@@ -14,18 +13,6 @@ CLAIM = """
     ORDER BY priority, created_at
     LIMIT 1 FOR UPDATE SKIP LOCKED
 """
-
-
-async def insert_job(conn, *, key=None, owner_id=1, priority=2):
-    return await conn.fetchval(
-        """
-        INSERT INTO jobs (kind, owner_type, owner_id, idempotency_key, request_hash,
-                          language, source, priority)
-        VALUES ('run', 'client', $1, $2, $3, 'python', 'print(1)', $4)
-        RETURNING id
-        """,
-        owner_id, key, hashlib.sha256(b"request").digest(), priority,
-    )
 
 
 async def test_migrations_apply_only_once(dsn):

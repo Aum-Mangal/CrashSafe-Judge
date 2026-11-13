@@ -14,7 +14,7 @@ dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
 
 [tool.setuptools]
 # Listed by hand, because the repo also holds non-Python folders
-packages = ["db"]
+packages = ["core", "db"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
