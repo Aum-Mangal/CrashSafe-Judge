@@ -117,7 +117,6 @@ jobs             id UUID default gen_random_uuid()      -- also the MCP taskId
                  status ('queued'|'running'|'completed'|'cancelled'|'dead')
                  attempts, max_attempts (3), not_before
                  worker_id, lease_until, fencing_token BIGINT
-                 container_id                           -- unused: container labels replaced it. To be dropped
                  cancel_requested BOOL, last_error
                  submitted_at, created_at, started_at, finished_at, expires_at
                  rejudge_of UUID NULL, superseded BOOL DEFAULT false

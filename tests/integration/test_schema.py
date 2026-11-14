@@ -19,6 +19,14 @@ async def test_migrations_apply_only_once(dsn):
     assert await migrate(dsn) == []
 
 
+async def test_jobs_has_no_container_id(db):
+    # Dropped in 0002: sandboxes are found by their labels instead (DECISIONS.md, 84)
+    columns = await db.fetch(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'jobs'"
+    )
+    assert "container_id" not in {c["column_name"] for c in columns}
+
+
 async def test_a_job_has_at_most_one_result(db):
     job = await insert_job(db)
     await db.execute("INSERT INTO results (job_id, verdict) VALUES ($1, 'OK')", job)
