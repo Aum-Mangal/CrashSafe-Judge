@@ -1,26 +1,41 @@
 """The REST API (ARCHITECTURE.md §9): accounts, the visibility rule, the contest window and
 submissions. No worker runs here; the queue itself is tested elsewhere."""
 
+import asyncio
 import time
+from contextlib import asynccontextmanager
+from datetime import timedelta
 
 import httpx
 import jwt
 import pytest
 
 from api.app import create_app
+from api.ratelimit import Limit, LoginLimits
+from core import queue
 from helpers import insert_problem
 
 SECRET = "test-secret-" + "x" * 32
 CODE = "invite-123"
+# The real limits, with hour-long windows: a test running across a window boundary would see
+# its counter start again at zero and fail at random
+LIMITS = LoginLimits(Limit("address", 20, timedelta(hours=1)), Limit("email", 10, timedelta(hours=1)))
 
 
-@pytest.fixture
-async def api(dsn):
-    app = create_app(dsn, SECRET)
+@asynccontextmanager
+async def open_api(dsn, **options):
+    app = create_app(dsn, SECRET, **{"login_limits": LIMITS, **options})
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://judge") as client:
             yield client
+
+
+@pytest.fixture
+async def api(dsn):
+    # As in production behind the tunnel, so each test request can say which address it comes from
+    async with open_api(dsn, client_ip_header="CF-Connecting-IP") as client:
+        yield client
 
 
 async def make_contest(db, starts_in, ends_in, problem_ids=(), code=CODE):
@@ -98,6 +113,81 @@ async def test_a_wrong_password_and_an_unknown_email_look_the_same(api, db):
     unknown_email = await api.post("/auth/login", json={"email": "bob@example.com", "password": "guess"})
     assert wrong_password.status_code == unknown_email.status_code == 401
     assert wrong_password.json() == unknown_email.json()
+
+
+# --- Login limits (DECISIONS.md, 102)
+
+
+def login(api, password, address="10.0.0.1", email="ann@example.com"):
+    return api.post(
+        "/auth/login", json={"email": email, "password": password}, headers={"CF-Connecting-IP": address}
+    )
+
+
+async def test_failed_logins_are_limited_per_email(api, db):
+    await signed_in(api, db)
+    # From a new address each time, so only the per-email limit applies
+    codes = [(await login(api, "guess", f"10.0.1.{n}")).status_code for n in range(11)]
+    assert codes == [401] * 10 + [429]
+    # Locked even with the right password: otherwise the 11th guess would still be checked
+    locked = await login(api, "correct horse", "10.0.2.1")
+    assert locked.status_code == 429
+    assert 0 < int(locked.headers["Retry-After"]) <= 3600
+
+
+async def test_successful_logins_use_no_attempts(api, db):
+    await signed_in(api, db)
+    for n in range(12):
+        assert (await login(api, "correct horse", f"10.0.1.{n}")).status_code == 200
+    assert (await login(api, "guess", "10.0.2.1")).status_code == 401
+
+
+async def test_guesses_sent_together_cannot_pass_the_limit(api, db):
+    await signed_in(api, db)
+    replies = await asyncio.gather(*(login(api, "guess", f"10.0.1.{n}") for n in range(30)))
+    codes = sorted(r.status_code for r in replies)
+    assert codes == [401] * 10 + [429] * 20
+
+
+async def test_one_address_is_limited_across_emails(api, db):
+    await signed_in(api, db)  # registers from the test client's own address, not 10.9.9.9
+    codes = [(await login(api, "guess", "10.9.9.9", f"user{n}@example.com")).status_code for n in range(21)]
+    assert codes == [401] * 20 + [429]
+    # Registration counts too, and other addresses are unaffected
+    blocked = await api.post(
+        "/auth/register", json={"email": "c@d.e", "password": "12345678", "invite_code": CODE},
+        headers={"CF-Connecting-IP": "10.9.9.9"},
+    )
+    assert blocked.status_code == 429
+    assert (await login(api, "correct horse", "10.9.9.10")).status_code == 200
+
+
+async def test_the_address_header_is_ignored_unless_configured(dsn, db):
+    async with open_api(dsn) as api:
+        await signed_in(api, db)
+        # Every request comes from the same peer, whatever the header claims
+        codes = [(await login(api, "guess", f"10.0.1.{n}", f"user{n}@example.com")).status_code for n in range(20)]
+        assert codes == [401] * 19 + [429]
+
+
+async def test_limit_counters_store_no_email_or_address(api, db):
+    await signed_in(api, db)
+    await login(api, "guess", "10.1.2.3")
+    stored = await db.fetch("SELECT key_hash FROM login_limits")
+    assert stored and all(b"ann@example.com" not in bytes(r["key_hash"]) for r in stored)
+    assert all(b"10.1.2.3" not in bytes(r["key_hash"]) for r in stored)
+
+
+async def test_old_limit_windows_are_deleted(db):
+    for table, key in (("rate_limits", "owner_type, owner_id"), ("login_limits", "key_hash")):
+        values = "'user', 1" if table == "rate_limits" else "'\\x01'::bytea"
+        await db.execute(
+            f"""INSERT INTO {table} ({key}, window_start, count) VALUES
+                ({values}, now() - interval '2 hours', 5), ({values}, now(), 5)"""
+        )
+    await queue.delete_expired(db)
+    for table in ("rate_limits", "login_limits"):
+        assert await db.fetchval(f"SELECT count(*) FROM {table}") == 1
 
 
 @pytest.mark.parametrize(

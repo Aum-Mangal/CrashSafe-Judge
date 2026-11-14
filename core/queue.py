@@ -207,10 +207,14 @@ async def reap(conn: asyncpg.Connection, batch: int = 100) -> list[tuple[UUID, s
 
 
 async def delete_expired(conn: asyncpg.Connection) -> int:
-    """Deletes finished jobs past their expiry, taking their source, input and result with them."""
+    """Deletes finished jobs past their expiry, taking their source, input and result with them.
+    Returns how many. Also deletes rate-limit windows that ended over an hour ago; the longest
+    window is 15 minutes, so none of them can still decide anything."""
     status = await conn.execute(
         "DELETE FROM jobs WHERE expires_at < now() AND status IN ('completed', 'cancelled', 'dead')"
     )
+    await conn.execute("DELETE FROM rate_limits WHERE window_start < now() - interval '1 hour'")
+    await conn.execute("DELETE FROM login_limits WHERE window_start < now() - interval '1 hour'")
     return int(status.split()[-1])
 
 

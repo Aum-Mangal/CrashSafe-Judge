@@ -388,6 +388,8 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 - Worker compromise equals compromise of `judge-prod`. The Docker socket is root-equivalent.
 - Timing side channels. Failing test index and timing are visible by design, as on all judges. Rate limits reduce this but do not remove it.
 
+**Login limits:** 20 login or registration attempts a minute per address, and 10 failed logins in 15 minutes per email. Counters store only hashes of the address and email. The address header from the tunnel is trusted only when configured (DECISIONS.md, 102).
+
 **Data:** source and output are never logged. Agent jobs and results expire after 24 h. API keys are hashed and compared in constant time. Backups contain emails and password hashes, so they are encrypted with `age` before being copied to OneDrive.
 
 ---
@@ -528,6 +530,4 @@ judge/
 
 Places where the code does not yet do what this document claims. Each is removed from this list when it is fixed and tested.
 
-- **Login and registration have no rate limit** (DECISIONS.md, 101). §6's limits cover job creation only.
-
-The review's last two gaps were fixed on 14 Nov: the LISTEN connection is restored after a Postgres restart (DECISIONS.md, 93), and a database error during the final commit is retried instead of ending the worker (92).
+None open. Login and registration got their rate limit on 14 Nov (DECISIONS.md, 102). The review's last two gaps were also fixed on 14 Nov: the LISTEN connection is restored after a Postgres restart (DECISIONS.md, 93), and a database error during the final commit is retried instead of ending the worker (92).

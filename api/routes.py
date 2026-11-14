@@ -8,7 +8,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from api import ratelimit
 from api.auth import User, current_user, hash_password, make_token, password_matches
+from api.ratelimit import Limit, LoginLimits
 from core import problems, queue
 from core.jobs import IdempotencyConflict, NewJob, Rejected, create_job
 
@@ -40,9 +42,24 @@ def _token_reply(request: Request, user_id: int) -> dict:
     return {"access_token": make_token(user_id, request.app.state.jwt_secret), "token_type": "bearer"}
 
 
+def _client_address(request: Request) -> str:
+    header = request.app.state.client_ip_header
+    if header and request.headers.get(header):
+        return request.headers[header].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def _take(request: Request, limit: Limit, value: str):
+    try:
+        return await ratelimit.take(_pool(request), limit, value)
+    except ratelimit.TooMany as e:
+        raise HTTPException(429, "too many attempts, try again later", {"Retry-After": str(e.retry_after)}) from None
+
+
 @router.post("/auth/register", status_code=201)
 async def register(body: Register, request: Request):
     pool = _pool(request)
+    await _take(request, request.app.state.login_limits.per_address, _client_address(request))
     # Registration is only open to people holding the code of a contest that hasn't ended
     if not await pool.fetchval("SELECT 1 FROM contests WHERE invite_code = $1 AND ends_at > now()", body.invite_code):
         raise HTTPException(403, "invalid invite code")
@@ -59,13 +76,19 @@ async def register(body: Register, request: Request):
 
 @router.post("/auth/login")
 async def login(body: Login, request: Request):
-    row = await _pool(request).fetchrow(
-        "SELECT id, password_hash FROM users WHERE email = $1", body.email.strip().lower()
-    )
+    limits: LoginLimits = request.app.state.login_limits
+    email = body.email.strip().lower()
+    await _take(request, limits.per_address, _client_address(request))
+    # Taken before the check and given back on success, so guesses sent together can't all
+    # slip under the limit. Unknown emails are limited too, so the limit reveals nothing.
+    window = await _take(request, limits.per_email, email)
+
+    row = await _pool(request).fetchrow("SELECT id, password_hash FROM users WHERE email = $1", email)
     # The hash is checked even for an unknown email, and both mistakes get the same answer
     matches = await password_matches(row["password_hash"] if row else None, body.password)
     if row is None or not matches:
         raise HTTPException(401, "wrong email or password")
+    await ratelimit.give_back(_pool(request), limits.per_email, email, window)
     return _token_reply(request, row["id"])
 
 
