@@ -1,5 +1,8 @@
 """Gate 1: kill a worker with SIGKILL in the middle of a job. Another worker must recover the job
-and record exactly one correct verdict, and no sandbox may be left behind."""
+and record exactly one correct verdict, and no sandbox may be left behind.
+
+The roadmap's gate names C++. Python is kept too: the two take different paths (C++ compiles
+in a separate sandbox first), so the kill lands at a different point in each."""
 
 import asyncio
 
@@ -9,12 +12,26 @@ from helpers import eventually, insert_job, insert_problem, sandboxes_for, start
 
 pytestmark = pytest.mark.sandbox
 
-SLOW_SOLUTION = "import time\ntime.sleep(3)\nprint('done')"
+# Sleeping uses no CPU, so these stay under the 2 s CPU limit while giving the kill time to land
+SLOW_SOLUTIONS = {
+    "cpp": (
+        "#include <chrono>\n#include <iostream>\n#include <thread>\n"
+        "int main() {\n"
+        "    std::this_thread::sleep_for(std::chrono::seconds(3));\n"
+        "    std::cout << \"done\\n\";\n"
+        "}\n"
+    ),
+    "python": "import time\ntime.sleep(3)\nprint('done')",
+}
 
 
-async def test_a_killed_workers_job_recovers_to_one_verdict(dsn, db, tmp_path):
+@pytest.mark.parametrize("language", ["cpp", "python"])
+async def test_a_killed_workers_job_recovers_to_one_verdict(dsn, db, tmp_path, language):
     problem = await insert_problem(db, [("", "done\n", False)], time_limit_ms=2000)
-    job = await insert_job(db, kind="submission", problem_id=problem, priority=0, source=SLOW_SOLUTION)
+    job = await insert_job(
+        db, kind="submission", problem_id=problem, priority=0, language=language,
+        source=SLOW_SOLUTIONS[language],
+    )
 
     async def status():
         return await db.fetchval("SELECT status FROM jobs WHERE id = $1", job)
