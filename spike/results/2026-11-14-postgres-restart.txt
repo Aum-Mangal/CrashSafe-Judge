@@ -1,0 +1,22 @@
+Real Postgres restart under a running worker (DECISIONS.md, 93)
+
+Setup: dev distro, fresh database demo_restart, one worker with POLL_SECONDS=60, so only a
+notification can make it claim quickly. `docker compose restart postgres` 3 s after start,
+then a job inserted and NOTIFY job_new sent once the worker logged that it was listening again.
+
+postgres container restarted in 0.6 s
+worker listening again 1.6 s after the restart began
+notified job claimed after 0.05 s (poll interval is 60 s)
+job ended completed with verdict OK
+worker process still alive: True
+
+--- worker log
+2026-11-14 03:48:17,263 INFO worker: worker demo started for instance demo_restart
+2026-11-14 03:48:17,291 INFO worker: listening for notifications
+2026-11-14 03:48:20,297 WARNING worker: notification connection closed by the server, reconnecting in 1 s
+2026-11-14 03:48:20,298 WARNING asyncpg.pool: Failed to restore the pool connection floor; retrying
+  (traceback from asyncpg's pool, which retries by itself, ending in:)
+  asyncpg.exceptions.CannotConnectNowError: the database system is shutting down
+2026-11-14 03:48:21,305 INFO worker: listening for notifications
+2026-11-14 03:48:21,717 INFO worker: claimed b5bc5078-e1c0-4d37-9030-01abf79039b0 (run, attempt 1, token 1)
+2026-11-14 03:48:22,513 INFO worker: finished b5bc5078-e1c0-4d37-9030-01abf79039b0: OK

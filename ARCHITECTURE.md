@@ -184,7 +184,9 @@ LIMIT 1 FOR UPDATE SKIP LOCKED;
 ```
 Then set `running`, `worker_id`, `lease_until = now() + 30s`, `attempts + 1`, `fencing_token + 1`, `started_at`.
 
-**Worker wake-up:** claim on `job_new`, **and** poll every 2 s. Polling is the guarantee, NOTIFY is the optimisation. After finishing a job, claim again immediately.
+**Worker wake-up:** claim on `job_new`, **and** poll every 2 s. Polling is the guarantee, NOTIFY is the optimisation. After finishing a job, claim again immediately. The wake-up flag is cleared before each claim query, not after it, so a `job_new` that arrives while the query runs is not lost (DECISIONS.md, 94).
+
+**The LISTEN connection** is separate from the pool and named `judge-listen <worker id>` in `pg_stat_activity`. When the server closes it, or a `SELECT 1` every 30 s fails, the worker reconnects with backoff (1 s, doubling to 30 s). Notifications sent while it was down are gone, so after each connect the worker wakes its claim loop and heartbeats its running job at once, which reads any cancel it missed (DECISIONS.md, 93).
 
 **Heartbeat** (every 5 s, own task)
 ```sql
@@ -195,6 +197,8 @@ RETURNING cancel_requested;
 Zero rows means the lease is lost: kill the containers and abandon the work.
 
 **Finish** (one transaction): set `completed` with the same fenced `WHERE`. Zero rows: rollback. Otherwise insert the result, commit, NOTIFY `job_done`.
+
+The worker's last write (finish, cancel or release) is retried on a database error, with backoff from 0.2 s to 2 s, until the lease would have run out. The fence makes this safe. If a commit landed but its reply was lost, the retry finds the job no longer `running` and writes nothing. After the lease, the worker gives up and the reaper retries the job (DECISIONS.md, 92).
 
 **Release** (infra failure): fenced update back to `queued` with `not_before = now() + 10s × attempts`, then NOTIFY `job_new`. Failures caused by the submission never use this path (§7).
 
@@ -397,7 +401,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 | Job fails 3× | `dead` + IE result |
 | Crash during cancel | Reaper sets `cancelled`, never requeues |
 | Missed NOTIFY | 2 s claim poll, heartbeat covers cancel |
-| Postgres restart | API 503 via readiness, workers reconnect through their pool, reaper waits one heartbeat. Re-LISTEN is not built yet (§16) |
+| Postgres restart | API 503 via readiness, workers reconnect through their pool and re-LISTEN, reaper waits one heartbeat, the final commit is retried until the lease ends |
 | API restart | Clients retry with the same idempotency key |
 | Docker hang | Timeouts on every call, then release with backoff |
 | Program OOM | Program killed, MLE, sandbox survives |
@@ -525,7 +529,4 @@ judge/
 
 Places where the code does not yet do what this document claims. Each is removed from this list when it is fixed and tested.
 
-| Gap | Effect | Planned fix |
-|---|---|---|
-| The worker's LISTEN connection is never restored after a Postgres restart | Jobs still move through polling, but instant wake-up and fast cancel are lost until the worker restarts | Reconnect and re-LISTEN |
-| A database error during the final commit ends the worker process | The finished verdict is lost and the job uses up an attempt | Retry the fenced commit until the lease would have expired |
+None open. The last two were fixed on 14 Nov: the LISTEN connection is restored after a Postgres restart (DECISIONS.md, 93), and a database error during the final commit is retried instead of ending the worker (92).
