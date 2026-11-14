@@ -32,6 +32,44 @@ async def get_visible(conn: asyncpg.Connection, slug: str) -> asyncpg.Record | N
     )
 
 
+async def contest(conn: asyncpg.Connection, contest_id: int) -> asyncpg.Record | None:
+    """A contest, with the database's time, so callers judge "started" and "ended" by one clock.
+    The invite code is never selected: it is the only thing guarding registration."""
+    return await conn.fetchrow(
+        "SELECT id, title, starts_at, ends_at, now() AS db_now FROM contests WHERE id = $1", contest_id
+    )
+
+
+async def contests(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+    return await conn.fetch(
+        "SELECT id, title, starts_at, ends_at, now() AS db_now FROM contests ORDER BY starts_at DESC"
+    )
+
+
+async def contest_problems(conn: asyncpg.Connection, contest_id: int) -> list[asyncpg.Record]:
+    """The contest's visible problems by label: none before the start."""
+    return await conn.fetch(
+        f"""
+        SELECT cp.label, p.slug, p.title
+        FROM contest_problems cp JOIN problems p ON p.id = cp.problem_id
+        WHERE cp.contest_id = $1 AND {VISIBLE}
+        ORDER BY cp.label
+        """,
+        contest_id,
+    )
+
+
+async def contest_problem(conn: asyncpg.Connection, contest_id: int, label: str) -> asyncpg.Record | None:
+    return await conn.fetchrow(
+        f"""
+        SELECT p.id, p.slug, p.title, p.statement_md, p.time_limit_ms, p.memory_limit_mb, p.checker, cp.label
+        FROM contest_problems cp JOIN problems p ON p.id = cp.problem_id
+        WHERE cp.contest_id = $1 AND cp.label = $2 AND {VISIBLE}
+        """,
+        contest_id, label,
+    )
+
+
 async def samples(conn: asyncpg.Connection, problem_id: int) -> list[asyncpg.Record]:
     """Sample tests only. Hidden tests are never read by the API."""
     return await conn.fetch(

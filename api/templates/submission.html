@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+{% block title %}Submission{% endblock %}
+{% block main %}
+{% if s.contest_id %}<p class="muted"><a href="/c/{{ s.contest_id }}">Back to the contest</a></p>{% endif %}
+<h1>{% if s.label %}{{ s.label }}. {% endif %}{{ s.problem_title }}</h1>
+<p class="muted num">{{ languages[s.language] }} · submitted {{ local(s.submitted_at) }}</p>
+
+<p style="font-size: 1.25rem">
+  {% if s.verdict %}<span class="verdict-{{ s.verdict }}">{{ verdicts[s.verdict] }}</span>
+    {% if s.failed_test %}<span class="muted">on test {{ s.failed_test }}</span>{% endif %}
+  {% elif s.status == "cancelled" %}<span class="muted">Cancelled</span>
+  {% else %}<span class="waiting">{{ "Judging…" if s.status == "running" else "In the queue…" }}</span>
+    <span class="muted" style="font-size: 1rem">this page updates by itself</span>
+  {% endif %}
+</p>
+
+{% if s.tests %}
+<table>
+  <tr><th>Test</th><th>Result</th><th>CPU time</th><th>Memory</th></tr>
+  {% for t in s.tests %}
+  <tr class="num">
+    <td>{{ loop.index }}</td>
+    <td>{% if t.verdict == "skipped" %}<span class="muted">not run</span>{% else %}<span class="verdict-{{ t.verdict }}">{{ t.verdict }}</span>{% endif %}</td>
+    <td>{% if t.cpu_ms is defined %}{{ t.cpu_ms }} ms{% endif %}</td>
+    <td>{% if t.peak_kb %}{{ (t.peak_kb / 1024) | round(1) }} MB{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if s.compile_log %}<h2>Compiler output</h2><pre>{{ s.compile_log }}</pre>{% endif %}
+{# Only ever from a sample test: hidden tests store no output (ARCHITECTURE.md §4) #}
+{% if s.stdout %}<h2>Your output on the example</h2><pre>{{ s.stdout }}</pre>{% endif %}
+{% if s.stderr %}<h2>Error output</h2><pre>{{ s.stderr }}</pre>{% endif %}
+
+<h2>Your code</h2>
+<pre>{{ s.source }}</pre>
+{% endblock %}

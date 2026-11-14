@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Contests</h1>
+{% if contests %}
+<table>
+  <tr><th>Contest</th><th>Starts</th><th>Ends</th><th></th></tr>
+  {% for c in contests %}
+  <tr>
+    <td><a href="/c/{{ c.id }}">{{ c.title }}</a></td>
+    <td class="num">{{ local(c.starts_at) }}</td>
+    <td class="num">{{ local(c.ends_at) }}</td>
+    <td class="muted">{{ c.phase }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">No contests yet.</p>
+{% endif %}
+{% endblock %}

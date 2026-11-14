@@ -1,6 +1,7 @@
 """Small helpers shared by the tests."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -109,3 +110,38 @@ async def eventually(check, timeout, what, log_dir=None):
             f"--- {p.name}\n{p.read_text(errors='replace')[-3000:]}" for p in sorted(log_dir.glob("*.log"))
         )
     raise AssertionError(f"timed out waiting for {what}\n{logs}")
+
+
+TEST_SECRET = "test-secret-" + "x" * 32
+
+
+@contextlib.asynccontextmanager
+async def open_api(dsn, **options):
+    """The API app, called in-process: httpx speaks ASGI to it directly, with no network."""
+    import httpx
+
+    from api.app import create_app
+
+    app = create_app(dsn, TEST_SECRET, **options)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://judge") as client:
+            yield client
+
+
+async def make_contest(conn, starts_in, ends_in, problem_ids=(), code="invite-123", title="Mock"):
+    """A contest starting and ending this many seconds from now (negative for the past)."""
+    contest = await conn.fetchval(
+        """
+        INSERT INTO contests (title, invite_code, starts_at, ends_at)
+        VALUES ($1, $2, now() + make_interval(secs => $3), now() + make_interval(secs => $4))
+        RETURNING id
+        """,
+        title, code, starts_in, ends_in,
+    )
+    for n, problem in enumerate(problem_ids):
+        await conn.execute(
+            "INSERT INTO contest_problems (contest_id, problem_id, label) VALUES ($1, $2, $3)",
+            contest, problem, chr(ord("A") + n),
+        )
+    return contest

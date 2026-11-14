@@ -3,32 +3,26 @@ submissions. No worker runs here; the queue itself is tested elsewhere."""
 
 import asyncio
 import time
-from contextlib import asynccontextmanager
 from datetime import timedelta
 
-import httpx
 import jwt
 import pytest
 
 from api.app import create_app
 from api.ratelimit import Limit, LoginLimits
 from core import queue
-from helpers import insert_problem
+from helpers import TEST_SECRET as SECRET
+from helpers import insert_problem, make_contest
+from helpers import open_api as open_app
 
-SECRET = "test-secret-" + "x" * 32
 CODE = "invite-123"
 # The real limits, with hour-long windows: a test running across a window boundary would see
 # its counter start again at zero and fail at random
 LIMITS = LoginLimits(Limit("address", 20, timedelta(hours=1)), Limit("email", 10, timedelta(hours=1)))
 
 
-@asynccontextmanager
-async def open_api(dsn, **options):
-    app = create_app(dsn, SECRET, **{"login_limits": LIMITS, **options})
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://judge") as client:
-            yield client
+def open_api(dsn, **options):
+    return open_app(dsn, **{"login_limits": LIMITS, **options})
 
 
 @pytest.fixture
@@ -36,24 +30,6 @@ async def api(dsn):
     # As in production behind the tunnel, so each test request can say which address it comes from
     async with open_api(dsn, client_ip_header="CF-Connecting-IP") as client:
         yield client
-
-
-async def make_contest(db, starts_in, ends_in, problem_ids=(), code=CODE):
-    """A contest starting and ending this many seconds from now (negative for the past)."""
-    contest = await db.fetchval(
-        """
-        INSERT INTO contests (title, invite_code, starts_at, ends_at)
-        VALUES ('Mock', $1, now() + make_interval(secs => $2), now() + make_interval(secs => $3))
-        RETURNING id
-        """,
-        code, starts_in, ends_in,
-    )
-    for n, problem in enumerate(problem_ids):
-        await db.execute(
-            "INSERT INTO contest_problems (contest_id, problem_id, label) VALUES ($1, $2, $3)",
-            contest, problem, chr(ord("A") + n),
-        )
-    return contest
 
 
 async def slug(db, problem_id):

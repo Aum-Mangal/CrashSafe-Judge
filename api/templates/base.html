@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% block head %}{% endblock %}
+<title>{% block title %}Judge{% endblock %}</title>
+<style>
+  :root { --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #deded9; --box: #f1f1ee;
+          --accent: #2456c7; --ok: #1f7a3a; --bad: #b3261e; --wait: #8a6100; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ecece8; --muted: #a2a29b; --line: #34342f; --box: #20201e;
+            --accent: #7ea2ff; --ok: #5cc27c; --bad: #ff8a80; --wait: #e0b04a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { border-bottom: 1px solid var(--line); }
+  header div, main { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+  header div { display: flex; gap: 16px; align-items: center; height: 52px; }
+  header .home { font-weight: 600; color: var(--fg); margin-right: auto; }
+  main { padding-top: 24px; padding-bottom: 64px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 8px; }
+  h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+  .muted { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; font-size: .85rem; color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
+  pre, textarea, code { font: 14px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  pre { background: var(--box); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        overflow-x: auto; white-space: pre; margin: 0; }
+  form.stack { display: grid; gap: 12px; max-width: 380px; }
+  label { display: grid; gap: 4px; font-size: .9rem; }
+  input, select, textarea { font-size: 16px; padding: 8px 10px; border: 1px solid var(--line);
+                            border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; }
+  textarea { min-height: 280px; resize: vertical; }
+  button { font: inherit; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent);
+           color: #fff; cursor: pointer; justify-self: start; }
+  button.link { background: none; color: var(--accent); padding: 0; }
+  .error { color: var(--bad); }
+  .verdict-AC { color: var(--ok); font-weight: 600; }
+  .verdict-WA, .verdict-TLE, .verdict-MLE, .verdict-OLE, .verdict-RE, .verdict-CE, .verdict-IE { color: var(--bad); font-weight: 600; }
+  .waiting { color: var(--wait); font-weight: 600; }
+  .samples { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .samples h3 { font-size: .85rem; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+  @media (max-width: 600px) { .samples { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header><div>
+  <a class="home" href="/">Judge</a>
+  {% if user %}
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link">Log out</button></form>
+  {% else %}
+    <a href="/login">Log in</a><a href="/register">Register</a>
+  {% endif %}
+</div></header>
+<main>{% block main %}{% endblock %}</main>
+</body>
+</html>

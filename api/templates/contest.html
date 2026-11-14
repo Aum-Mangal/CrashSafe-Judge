@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block head %}{% if phase == "upcoming" %}<meta http-equiv="refresh" content="30">{% endif %}{% endblock %}
+{% block title %}{{ contest.title }}{% endblock %}
+{% block main %}
+<h1>{{ contest.title }}</h1>
+<p class="muted num">
+  {{ local(contest.starts_at) }} to {{ local(contest.ends_at) }}<br>
+  {% if phase == "upcoming" %}Starts in {{ starts_in }}. The problems appear here at the start.
+  {% elif phase == "running" %}Running: ends in {{ ends_in }}.
+  {% else %}Ended.{% endif %}
+</p>
+
+{% if problems %}
+<h2>Problems</h2>
+<table>
+  {% for p in problems %}
+  <tr><td style="width: 3em"><strong>{{ p.label }}</strong></td><td><a href="/c/{{ contest.id }}/{{ p.label }}">{{ p.title }}</a></td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if user and submissions %}
+<h2>Your submissions</h2>
+<table>
+  <tr><th>Time</th><th>Problem</th><th>Result</th></tr>
+  {% for s in submissions %}
+  <tr>
+    <td class="num"><a href="/s/{{ s.id }}">{{ local(s.submitted_at) }}</a></td>
+    <td>{{ s.label }}</td>
+    <td>{% if s.verdict %}<span class="verdict-{{ s.verdict }}">{{ verdicts[s.verdict] }}</span>{% else %}<span class="waiting">{{ s.status }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% elif not user %}
+<p class="muted"><a href="/login">Log in</a> to submit.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ problem.label }}. {{ problem.title }}{% endblock %}
+{% block main %}
+<p class="muted"><a href="/c/{{ contest.id }}">{{ contest.title }}</a></p>
+<h1>{{ problem.label }}. {{ problem.title }}</h1>
+<p class="muted num">Time limit {{ problem.time_limit_ms }} ms · Memory limit {{ problem.memory_limit_mb }} MB</p>
+
+{# Rendered from Markdown with raw HTML switched off, so marking it safe can't let a tag through #}
+<div>{{ statement | safe }}</div>
+
+{% if samples %}
+<h2>Examples</h2>
+{% for s in samples %}
+<div class="samples">
+  <div><h3>Input</h3><pre>{{ s.input_text }}</pre></div>
+  <div><h3>Output</h3><pre>{{ s.expected_text }}</pre></div>
+</div>
+{% endfor %}
+{% endif %}
+
+<h2>Submit</h2>
+{% if phase != "running" %}
+<p class="muted">The contest has ended, so submissions are closed.</p>
+{% elif not user %}
+<p><a href="/login">Log in</a> to submit.</p>
+{% else %}
+<form class="stack" style="max-width: none" method="post" action="/c/{{ contest.id }}/{{ problem.label }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="key" value="{{ key }}">
+  <label style="max-width: 200px">Language
+    <select name="language">{% for value, name in languages.items() %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select>
+  </label>
+  <label>Code <textarea name="source" maxlength="65536" spellcheck="false" required></textarea></label>
+  <button>Submit</button>
+</form>
+{% endif %}
+{% endblock %}

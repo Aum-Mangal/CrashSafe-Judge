@@ -328,6 +328,12 @@ Measured on 13 Nov: 0.26 s from request to sandbox removed on the fast path (DEC
 
 **Hidden-test rule:** results expose verdict, failing test index, time and memory only. Samples may show diffs.
 
+### Contest pages
+Plain HTML from the same process, with no JavaScript: contest list, log in, register, contest, problem and submission pages (DECISIONS.md, 104).
+- The session is the REST token in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie. Signed-in forms carry a CSRF token: an HMAC of the session under the server's secret (105).
+- Text is escaped, statements allow no raw HTML, and a Content Security Policy forbids all scripts (106).
+- A submit form carries a fresh idempotency key, so a double-click makes one job (107). The submission page reloads every 2 s until the verdict is in (108).
+
 ### Admin CLI (no web UI)
 `python -m judge.admin` runs inside `judge-prod`:
 - `import-problem <folder>`
@@ -504,9 +510,10 @@ The runner sets `RLIMIT_AS` to the problem limit plus 48 MB, below the cgroup's 
 
 ```
 judge/
-  api/         app.py, auth.py, routes.py, ratelimit.py, pages/
+  api/         app.py, auth.py, accounts.py, ratelimit.py, routes.py, pages.py, templates/
   mcp/         server.py, tools.py, tasks.py, schemas.py
-  core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel)
+  core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel),
+               problems.py (visibility), submissions.py (submit, read, cancel)
   worker/      main.py (claim, reaper and reconcile loops), judge.py, sandbox.py, checker.py, verdict.py
   runner/      judge_runner.c, Makefile
   admin/       __main__.py
@@ -522,7 +529,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py` and `routes.py` so far, and the visibility rule lives in `core/problems.py` so MCP can share it. `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py` and `templates/` so far. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/` so MCP can share them. `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
 
 ---
 
