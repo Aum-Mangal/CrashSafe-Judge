@@ -322,7 +322,7 @@ Measured on 13 Nov: 0.26 s from request to sandbox removed on the fast path (DEC
 - `GET /health/live`, `GET /health/ready`
 - `/metrics` on an internal port only
 
-**Problem visibility:** a problem is visible only if `is_public`, or if it belongs to a contest that has started. Otherwise return 404. This applies to REST and MCP, and has a CI test.
+**Problem visibility:** a problem is visible only if `is_public`, or if it belongs to a contest that has started. Otherwise return 404. This applies to REST and MCP, and has a CI test. Submissions: with `contest_id`, only while that contest runs, checked in the insert's transaction; without it, public problems only (DECISIONS.md, 100).
 
 **Contest window:** a submission is accepted only between `starts_at` and `ends_at`, by database time.
 
@@ -520,7 +520,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/`, `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
+`api/` has `app.py`, `auth.py` and `routes.py` so far, and the visibility rule lives in `core/problems.py` so MCP can share it. `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
 
 ---
 
@@ -528,4 +528,6 @@ judge/
 
 Places where the code does not yet do what this document claims. Each is removed from this list when it is fixed and tested.
 
-None open. The last two were fixed on 14 Nov: the LISTEN connection is restored after a Postgres restart (DECISIONS.md, 93), and a database error during the final commit is retried instead of ending the worker (92).
+- **Login and registration have no rate limit** (DECISIONS.md, 101). §6's limits cover job creation only.
+
+The review's last two gaps were fixed on 14 Nov: the LISTEN connection is restored after a Postgres restart (DECISIONS.md, 93), and a database error during the final commit is retried instead of ending the worker (92).
