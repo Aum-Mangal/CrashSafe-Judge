@@ -19,7 +19,7 @@ async def site(dsn):
 
 
 async def register(site, email="ann@example.com"):
-    reply = await site.post("/register", data={"email": email, "password": PASSWORD, "invite_code": CODE})
+    reply = await site.post("/register", data={"email": email, "password": PASSWORD, "invite_code": CODE, "display_name": "Ann"})
     assert reply.status_code == 303, reply.text
     return reply
 
@@ -81,7 +81,7 @@ async def test_log_in_and_out(site, db):
 
 
 async def test_a_bad_invite_code_shows_the_form_again(site, db):
-    reply = await site.post("/register", data={"email": "a@b.c", "password": PASSWORD, "invite_code": "nope"})
+    reply = await site.post("/register", data={"email": "a@b.c", "password": PASSWORD, "invite_code": "nope", "display_name": "Ann"})
     assert reply.status_code == 403 and "Invalid invite code." in reply.text and "set-cookie" not in reply.headers
 
 

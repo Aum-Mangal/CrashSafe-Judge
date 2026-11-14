@@ -46,7 +46,7 @@ async def signed_in(api, db, email="ann@example.com"):
     """Registers a user and returns headers carrying their token."""
     if not await db.fetchval("SELECT 1 FROM contests WHERE invite_code = $1", CODE):
         await make_contest(db, 3600, 7200)
-    reply = await api.post("/auth/register", json={"email": email, "password": "correct horse", "invite_code": CODE})
+    reply = await api.post("/auth/register", json={"email": email, "password": "correct horse", "invite_code": CODE, "display_name": "Ann"})
     assert reply.status_code == 201, reply.text
     return {"Authorization": f"Bearer {reply.json()['access_token']}"}
 
@@ -61,7 +61,7 @@ def source():
 async def test_registration_needs_a_live_invite_code(api, db):
     await make_contest(db, -7200, -3600, code="old-contest")
     for code in ("wrong", "old-contest"):
-        reply = await api.post("/auth/register", json={"email": "a@b.c", "password": "12345678", "invite_code": code})
+        reply = await api.post("/auth/register", json={"email": "a@b.c", "password": "12345678", "invite_code": code, "display_name": "Ann"})
         assert reply.status_code == 403
     assert await db.fetchval("SELECT count(*) FROM users") == 0
 
@@ -78,7 +78,7 @@ async def test_register_then_log_in(api, db):
 async def test_an_email_registers_only_once(api, db):
     await signed_in(api, db)
     reply = await api.post(
-        "/auth/register", json={"email": "ann@example.com", "password": "another one", "invite_code": CODE}
+        "/auth/register", json={"email": "ann@example.com", "password": "another one", "invite_code": CODE, "display_name": "Ann"}
     )
     assert reply.status_code == 409
 
@@ -131,7 +131,7 @@ async def test_one_address_is_limited_across_emails(api, db):
     assert codes == [401] * 20 + [429]
     # Registration counts too, and other addresses are unaffected
     blocked = await api.post(
-        "/auth/register", json={"email": "c@d.e", "password": "12345678", "invite_code": CODE},
+        "/auth/register", json={"email": "c@d.e", "password": "12345678", "invite_code": CODE, "display_name": "Ann"},
         headers={"CF-Connecting-IP": "10.9.9.9"},
     )
     assert blocked.status_code == 429

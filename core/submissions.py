@@ -102,7 +102,9 @@ async def get_owned(conn: asyncpg.Connection, user_id: int, job_id: UUID) -> dic
 
 async def list_owned(conn: asyncpg.Connection, user_id: int, contest_id: int, limit: int = 100) -> list[dict]:
     rows = await conn.fetch(
-        _OWNED + " AND j.contest_id = $2 ORDER BY j.submitted_at DESC LIMIT $3", user_id, contest_id, limit
+        # A rejudged submission is listed once, by its newest judging
+        _OWNED + " AND j.contest_id = $2 AND NOT j.superseded ORDER BY j.submitted_at DESC LIMIT $3",
+        user_id, contest_id, limit,
     )
     return [_shape(r) for r in rows]
 

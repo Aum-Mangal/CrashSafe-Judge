@@ -93,7 +93,7 @@ Swap must be off inside WSL, because reports show runsc memory limits can leak i
 ## 4. Data model (PostgreSQL)
 
 ```
-users            id, email UNIQUE, password_hash, role ('participant'|'admin'), created_at
+users            id, email UNIQUE, password_hash, display_name, role ('participant'|'admin'), created_at
 api_clients      id, name, key_hash, max_inflight (default 5), created_at
 problems         id, slug UNIQUE, title, statement_md, time_limit_ms, memory_limit_mb,
                  output_limit_kb (default 16384), checker ('exact'|'token'),
@@ -140,7 +140,7 @@ Rules:
 - **Hidden tests store no program output.** `stdout_trunc` and `stderr_trunc` stay NULL for hidden tests. Data that is never stored cannot leak through an API bug. A program could otherwise echo hidden input to stderr.
 - `IE` is written only for jobs that went dead.
 
-**Leaderboard:** ICPC ranking from `jobs` joined with `results`, using `submitted_at`, excluding `superseded` jobs, cached 5 s. CE and IE add no penalty.
+**Leaderboard:** ICPC ranking from `jobs` joined with `results`, using `submitted_at`, excluding `superseded` and cancelled jobs, cached 5 s. Solved problems cost their minute plus 20 per WA, TLE, MLE, OLE or RE before the first AC; CE and IE add no penalty; ties share a rank. It shows display names, never emails (DECISIONS.md, 110 to 112).
 
 ---
 
@@ -335,10 +335,11 @@ Plain HTML from the same process, with no JavaScript: contest list, log in, regi
 - A submit form carries a fresh idempotency key, so a double-click makes one job (107). The submission page reloads every 2 s until the verdict is in (108).
 
 ### Admin CLI (no web UI)
-`python -m judge.admin` runs inside `judge-prod`:
-- `import-problem <folder>`
-- `create-contest`, `create-client`
-- `rejudge --problem <slug> --contest <id>`: creates new jobs with `rejudge_of` set, the original `submitted_at`, and marks the old ones `superseded`. Old results stay for audit.
+`python -m admin` runs inside `judge-prod` (DECISIONS.md, 113):
+- `import-problem <folder>`: a folder named after the slug, with `problem.toml`, `statement.md`, `samples/` and `hidden/` (`1.in`, `1.out`, ...). Re-importing replaces the tests
+- `create-contest --title --start '2026-11-28 10:00' --minutes --problems a,b`, which prints a random invite code
+- `create-client --name`, which prints an API key once and stores its sha256
+- `rejudge --problem <slug> --contest <id>`: creates new jobs with `rejudge_of` set, the original `submitted_at` and priority 1, and marks the old ones `superseded` (cancelling any still queued or running). Old results stay for audit. Rejudge jobs don't count against the caps
 
 ### MCP `/mcp` (Streamable HTTP, stateless)
 - **Auth:** Bearer API key resolves to an `api_clients` row. Keys are issued by hand with the admin CLI.
@@ -513,10 +514,10 @@ judge/
   api/         app.py, auth.py, accounts.py, ratelimit.py, routes.py, pages.py, templates/
   mcp/         server.py, tools.py, tasks.py, schemas.py
   core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel),
-               problems.py (visibility), submissions.py (submit, read, cancel)
+               problems.py (visibility), submissions.py (submit, read, cancel), leaderboard.py (ICPC)
   worker/      main.py (claim, reaper and reconcile loops), judge.py, sandbox.py, checker.py, verdict.py
   runner/      judge_runner.c, Makefile
-  admin/       __main__.py
+  admin/       __main__.py (arguments), commands.py
   db/          migrate.py, migrations/
   deploy/      compose.dev.yml, setup-host.sh, wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1,
                check-isolation.sh, images/Dockerfile. Planned: docker-compose.yml, bootstrap.sh, backup.sh, keepalive/
@@ -529,7 +530,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py` and `templates/` so far. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/` so MCP can share them. `mcp/`, `admin/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/` so MCP can share them. `mcp/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
 
 ---
 

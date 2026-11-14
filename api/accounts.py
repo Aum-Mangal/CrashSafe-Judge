@@ -13,6 +13,8 @@ from api.ratelimit import Limit, LoginLimits
 
 class Register(BaseModel):
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+$")
+    # Shown on the public leaderboard instead of the email
+    display_name: str = Field(min_length=1, max_length=40)
     password: str = Field(min_length=8, max_length=128)
     invite_code: str = Field(min_length=1, max_length=64)
 
@@ -43,11 +45,14 @@ async def register(request: Request, body: Register) -> int:
     # Registration is only open to people holding the code of a contest that hasn't ended
     if not await pool.fetchval("SELECT 1 FROM contests WHERE invite_code = $1 AND ends_at > now()", body.invite_code):
         raise HTTPException(403, "invalid invite code")
+    name = " ".join(body.display_name.split())  # no leading, trailing or repeated spaces
+    if not name:
+        raise HTTPException(400, "choose a display name")
     password_hash = await hash_password(body.password)
     try:
         return await pool.fetchval(
-            "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
-            body.email.strip().lower(), password_hash,
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id",
+            body.email.strip().lower(), password_hash, name,
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "email already registered") from None

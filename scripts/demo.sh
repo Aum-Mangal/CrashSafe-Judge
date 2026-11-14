@@ -40,9 +40,21 @@ async def main():
              (b, 1, "hello\n", "olleh\n", True), (b, 2, "abc def\n", "fed cba\n", False)]
     await db.executemany("INSERT INTO testcases (problem_id, ordinal, input_text, expected_text, is_sample) VALUES ($1, $2, $3, $4, $5)", tests)
     contest = await db.fetchval("""INSERT INTO contests (title, invite_code, starts_at, ends_at)
-        VALUES ('Mock contest', 'demo-invite', now() - interval '1 minute', now() + interval '2 hours') RETURNING id""")
+        VALUES ('Mock contest', 'demo-invite', now() - interval '40 minutes', now() + interval '2 hours') RETURNING id""")
     await db.executemany("INSERT INTO contest_problems VALUES ($1, $2, $3)", [(contest, a, "A"), (contest, b, "B")])
-    await db.execute("INSERT INTO users (email, password_hash) VALUES ('demo@example.com', $1)", await hash_password("demo-password-1"))
+    await db.execute("INSERT INTO users (email, password_hash, display_name) VALUES ('demo@example.com', $1, 'Demo')", await hash_password("demo-password-1"))
+    # A few made-up contestants with results already in, so the leaderboard has something to rank
+    history = {"Asha": [(a, 3, "WA"), (a, 9, "AC"), (b, 20, "AC")], "Ravi": [(a, 12, "AC"), (b, 15, "CE"), (b, 18, "TLE")],
+               "Meera": [(b, 6, "AC"), (a, 30, "WA"), (a, 31, "WA")]}
+    for name, attempts in history.items():
+        user = await db.fetchval("INSERT INTO users (email, password_hash, display_name) VALUES ($1, 'x', $2) RETURNING id",
+                                 f"{name.lower()}@demo.invalid", name)
+        for problem, minute, verdict in attempts:
+            job = await db.fetchval("""INSERT INTO jobs (kind, owner_type, owner_id, request_hash, language, source, problem_id,
+                    contest_id, priority, status, submitted_at)
+                SELECT 'submission', 'user', $1, '\\x00', 'python', 'print()', $2, $3, 0, 'completed', starts_at + make_interval(mins => $4)
+                FROM contests WHERE id = $3 RETURNING id""", user, problem, contest, minute)
+            await db.execute("INSERT INTO results (job_id, verdict) VALUES ($1, $2)", job, verdict)
     await db.close()
 
 asyncio.run(main())

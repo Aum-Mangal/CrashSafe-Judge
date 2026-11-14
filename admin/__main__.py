@@ -1,0 +1,73 @@
+"""python -m admin <command>: the organiser's tools. Reads DATABASE_URL. See admin/commands.py."""
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+import asyncpg
+
+from admin import commands
+from db.migrate import DEFAULT_DSN
+
+
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m admin", description="Run a contest on the judge.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("import-problem", help="create or replace a problem from its folder")
+    p.add_argument("folder", type=Path)
+
+    p = sub.add_parser("create-contest", help="create a contest and print its invite code")
+    p.add_argument("--title", required=True)
+    p.add_argument("--start", required=True, help="local time, like '2026-11-28 10:00'")
+    p.add_argument("--minutes", type=int, required=True)
+    p.add_argument("--problems", required=True, help="slugs in label order, comma separated")
+    p.add_argument("--tz", default="Asia/Kolkata")
+    p.add_argument("--invite-code", help="default: a random one")
+
+    p = sub.add_parser("create-client", help="issue an API key for an MCP client")
+    p.add_argument("--name", required=True)
+    p.add_argument("--max-inflight", type=int, default=5)
+
+    p = sub.add_parser("rejudge", help="judge a contest problem's submissions again")
+    p.add_argument("--contest", type=int, required=True)
+    p.add_argument("--problem", required=True, help="the problem's slug")
+    return parser.parse_args(argv)
+
+
+async def run(args: argparse.Namespace) -> str:
+    conn = await asyncpg.connect(os.environ.get("DATABASE_URL", DEFAULT_DSN))
+    try:
+        if args.command == "import-problem":
+            problem_id, samples, hidden = await commands.import_problem(conn, args.folder)
+            return (f"imported {args.folder.name} as problem {problem_id}: {samples} samples, {hidden} hidden tests\n"
+                    "If it is in a contest that has started, run rejudge for it.")
+        if args.command == "create-contest":
+            slugs = [s.strip() for s in args.problems.split(",") if s.strip()]
+            contest_id, code = await commands.create_contest(
+                conn, args.title, args.start, args.minutes, slugs, args.tz, args.invite_code
+            )
+            return f"created contest {contest_id}\ninvite code: {code}"
+        if args.command == "create-client":
+            client_id, key = await commands.create_client(conn, args.name, args.max_inflight)
+            return f"created client {client_id}\nAPI key (shown only now, store it safely): {key}"
+        new = await commands.rejudge(conn, args.contest, args.problem)
+        return f"queued {len(new)} submissions for rejudging"
+    finally:
+        await conn.close()
+
+
+def main(argv: list[str]) -> int:
+    args = parse(argv)
+    try:
+        print(asyncio.run(run(args)))
+    except commands.AdminError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

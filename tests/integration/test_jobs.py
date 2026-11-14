@@ -18,7 +18,7 @@ async def new_client(db, max_inflight=5):
 
 async def new_user(db):
     return await db.fetchval(
-        "INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id", f"{uuid.uuid4().hex}@test"
+        "INSERT INTO users (email, password_hash, display_name) VALUES ($1, 'x', 'Test') RETURNING id", f"{uuid.uuid4().hex}@test"
     )
 
 

@@ -135,6 +135,17 @@ async def cancel_submission(job_id: UUID, request: Request, user: User = Depends
         raise NOT_FOUND from None
 
 
+# --- Leaderboard
+
+
+@router.get("/contests/{contest_id}/leaderboard")
+async def leaderboard(contest_id: int, request: Request):
+    found = await request.app.state.leaderboards.get(_pool(request), contest_id)
+    if found is None:
+        raise NOT_FOUND
+    return {"started": found.started, "problems": found.labels, "rows": found.rows}
+
+
 # --- Health
 
 

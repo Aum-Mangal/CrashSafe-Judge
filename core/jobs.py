@@ -91,14 +91,16 @@ async def create_job(conn: asyncpg.Connection, job: NewJob, caps: Caps = Caps())
         if rate["count"] > caps.per_minute:
             raise Rejected("rate limit", rate["retry_after"])
 
+        # Rejudge jobs don't count: the organiser made them, and they mustn't block anyone (DECISIONS.md, 113)
         inflight = await conn.fetchval(
-            "SELECT count(*) FROM jobs WHERE owner_type = $1 AND owner_id = $2 AND status IN ('queued', 'running')",
+            """SELECT count(*) FROM jobs WHERE owner_type = $1 AND owner_id = $2
+               AND status IN ('queued', 'running') AND rejudge_of IS NULL""",
             job.owner_type, job.owner_id,
         )
         if inflight >= max_inflight:
             raise Rejected("too many jobs in flight", 5)
 
-        queued = await conn.fetchval("SELECT count(*) FROM jobs WHERE status = 'queued'")
+        queued = await conn.fetchval("SELECT count(*) FROM jobs WHERE status = 'queued' AND rejudge_of IS NULL")
         if queued >= caps.global_queued:
             raise Rejected("queue full", 10)
 

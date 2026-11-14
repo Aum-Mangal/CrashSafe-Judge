@@ -107,16 +107,23 @@ async def register_form(request: Request):
 
 
 @router.post("/register")
-async def register(request: Request, email: str = Form(""), password: str = Form(""), invite_code: str = Form("")):
+async def register(
+    request: Request,
+    email: str = Form(""),
+    password: str = Form(""),
+    invite_code: str = Form(""),
+    display_name: str = Form(""),
+):
+    kept = {"email": email, "display_name": display_name}  # refilled if the form comes back
     try:
-        body = accounts.Register(email=email, password=password, invite_code=invite_code)
+        body = accounts.Register(email=email, password=password, invite_code=invite_code, display_name=display_name)
     except ValidationError:
-        error = "Use a valid email and a password of 8 to 128 characters."
-        return await _render(request, "register.html", 400, error=error, email=email)
+        error = "Use a valid email, a name of up to 40 characters and a password of 8 to 128 characters."
+        return await _render(request, "register.html", 400, error=error, **kept)
     try:
         user_id = await accounts.register(request, body)
     except HTTPException as e:
-        return await _render(request, "register.html", e.status_code, error=e.detail.capitalize() + ".", email=email)
+        return await _render(request, "register.html", e.status_code, error=e.detail.capitalize() + ".", **kept)
     response = _see("/")
     set_session(response, request, user_id)
     return response
@@ -148,6 +155,16 @@ async def contest_page(contest_id: int, request: Request):
         submissions=mine, verdicts=VERDICTS, starts_in=_until(contest["starts_at"], contest["db_now"]),
         ends_in=_until(contest["ends_at"], contest["db_now"]),
     )
+
+
+@router.get("/c/{contest_id}/leaderboard")
+async def leaderboard_page(contest_id: int, request: Request):
+    async with request.app.state.pool.acquire() as conn:
+        contest = await problems.contest(conn, contest_id)
+    if contest is None:
+        return await _message(request, 404, "Not found")
+    found = await request.app.state.leaderboards.get(request.app.state.pool, contest_id)
+    return await _render(request, "leaderboard.html", contest=contest, phase=_phase(contest), board=found)
 
 
 @router.get("/c/{contest_id}/{label}")

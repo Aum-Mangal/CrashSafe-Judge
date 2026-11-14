@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 from fastapi import FastAPI, Request
 
+from api.leaderboard import BoardCache
 from api.pages import router as pages_router
 from api.ratelimit import LoginLimits
 from api.routes import router
@@ -34,13 +35,15 @@ def create_app(
     login_limits: LoginLimits = LoginLimits(),
     cookie_secure: bool = True,
     display_tz: str = "Asia/Kolkata",
+    leaderboard_seconds: float = 5,
 ) -> FastAPI:
     """client_ip_header names a header holding the caller's real address, set by a proxy in front
     of the API. Only name one if nothing can reach the API except through that proxy: anyone
     else could write any address into it.
 
     cookie_secure=False lets the session cookie travel over plain HTTP, for local testing only.
-    display_tz is the time zone the pages show times in."""
+    display_tz is the time zone the pages show times in. leaderboard_seconds is how long a computed
+    leaderboard is reused; 0 turns the cache off."""
     # A short secret can be guessed offline from any one token, which forges every account
     if len(jwt_secret) < 32:
         raise ValueError("JWT_SECRET must be at least 32 characters")
@@ -59,6 +62,7 @@ def create_app(
     app.state.login_limits = login_limits
     app.state.cookie_secure = cookie_secure
     app.state.display_tz = ZoneInfo(display_tz)
+    app.state.leaderboards = BoardCache(leaderboard_seconds)
     app.include_router(router)
     app.include_router(pages_router)
 

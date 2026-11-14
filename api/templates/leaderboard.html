@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block head %}{% if phase == "running" %}<meta http-equiv="refresh" content="30">{% endif %}{% endblock %}
+{% block title %}Leaderboard · {{ contest.title }}{% endblock %}
+{% block main %}
+<p class="muted"><a href="/c/{{ contest.id }}">{{ contest.title }}</a></p>
+<h1>Leaderboard</h1>
+{% if not board.started %}
+<p class="muted">The contest hasn't started yet.</p>
+{% elif not board.rows %}
+<p class="muted">No submissions yet.</p>
+{% else %}
+<p class="muted">Ranked by problems solved, then penalty: minutes to each solve plus 20 per rejected attempt before it.
+{% if phase == "running" %}Updates every 30 seconds.{% endif %}</p>
+<div style="overflow-x: auto">
+<table class="board">
+  <tr><th>#</th><th>Name</th><th class="num">Solved</th><th class="num">Penalty</th>
+    {% for label in board.labels %}<th class="cell">{{ label }}</th>{% endfor %}</tr>
+  {% for row in board.rows %}
+  <tr>
+    <td class="num">{{ row.rank }}</td>
+    <td>{{ row.name }}</td>
+    <td class="num">{{ row.solved }}</td>
+    <td class="num">{{ row.penalty }}</td>
+    {% for label in board.labels %}{% set c = row.cells.get(label) %}
+    <td class="cell num">
+      {% if not c %}
+      {% elif c.solved %}<span class="verdict-AC">+{{ c.rejected or "" }}</span><br><span class="muted small">{{ c.minute }}</span>
+      {% elif c.pending %}<span class="waiting">?</span>{% if c.rejected %} <span class="verdict-WA">−{{ c.rejected }}</span>{% endif %}
+      {% elif c.rejected %}<span class="verdict-WA">−{{ c.rejected }}</span>
+      {% endif %}
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+</div>
+<p class="muted small">+ solved (with the number of rejected attempts before it, and the minute below) · − rejected attempts · ? being judged</p>
+{% endif %}
+{% endblock %}
