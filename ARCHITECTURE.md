@@ -393,7 +393,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 - All WSL2 distros of one Windows account share one Linux kernel. Under its own account, `judge-prod` runs in a separate virtual machine from the dev distro (verified 13 Nov: different kernel boot ids).
 - The judge account can still read and write whatever any standard user can, such as `C:\Users\Public` and parts of `C:\ProgramData`.
 - Worker compromise equals compromise of `judge-prod`. The Docker socket is root-equivalent.
-- Timing side channels. Failing test index and timing are visible by design, as on all judges. Rate limits reduce this but do not remove it.
+- Side channels. The failing test index and each test's time and memory are shown by design, as on all judges. A cheating program can choose its verdict, run time or memory on a hidden test to signal a few bits of that test's input per submission. Rate limits slow this but do not stop it. The leakage tests (DECISIONS.md, 115) cover data that is returned, not signals like these.
 
 **Login limits:** 20 login or registration attempts a minute per address, and 10 failed logins in 15 minutes per email. Counters store only hashes of the address and email. The address header from the tunnel is trusted only when configured (DECISIONS.md, 102).
 
@@ -465,7 +465,7 @@ In week 3, decide whether a stable URL is worth it. Only the hourly uptime check
 | Verdict integrity | Program tries to forge or tamper with the runner's report |
 | Test isolation | Background process and files from test 1 are gone before test 2; `/work` is the only writable place |
 | Blame rule, other side | A sandbox removed from outside raises an infrastructure error, not a verdict |
-| Hidden tests stay hidden | No API path returns hidden data; stderr echo stores nothing |
+| Hidden tests stay hidden | Every route, as every viewer, returns no hidden test, unstarted problem, invite code or other user's code or email; secret things answer exactly like missing ones; a program echoing hidden input gets nothing stored (`tests/leakage`) |
 | Problem visibility | Contest problem returns 404 before the start, on REST and MCP |
 | Cancellation | Fast-path percentiles, fallback bound, crash-during-cancel never re-executes, 0 leaked containers |
 | Orphan cleanup | Kill a worker mid-run; orphan is removed even while the retry runs |
