@@ -353,14 +353,14 @@ Plain HTML from the same process, with no JavaScript: contest list, log in, regi
 
 The spec does not cover `tools/call` retries, so the optional `idempotency_key` argument is how an agent retries safely.
 
-**Tasks extension (matches the 2026-07-28 spec)**
-- Advertise it in `server/discover`.
-- Return a task only if this request's `_meta` declared `io.modelcontextprotocol/tasks`.
-- `CreateTaskResult`: `resultType: "task"`, `taskId`, `status: "working"`, `createdAt`, `lastUpdatedAt`, `ttlMs: 86400000`, `pollIntervalMs: 1000`. Commit the job first.
-- `tasks/get` reads the jobs table on every call, with an ownership check.
-- `tasks/update`: a known ID gets an empty acknowledgement, since no input is ever requested. Unknown ID gets `-32602`.
+**Tasks extension (`api/tasks.py`, checked against the extension's specification on 15 Nov; DECISIONS.md, 123)**
+- Advertise it in `server/discover`. It exists only in the 2026-07-28 protocol; in 2025-11-25 the `tasks/*` methods are not found (`-32601`).
+- Return a task only if this request's `_meta` declared `io.modelcontextprotocol/tasks`, and only from the three tools that start a job. Read-only tools, and a call refused before any job exists, answer at once as usual.
+- `CreateTaskResult`: `resultType: "task"`, `taskId` (the job id), `status: "working"`, `statusMessage`, `createdAt`, `lastUpdatedAt`, `ttlMs: 86400000`, `pollIntervalMs: 1000`. The job is committed first, and the tool doesn't wait for it.
+- `tasks/get` reads the jobs table on every call, with an ownership check. Its reply is the task with `result` or `error` at the top level, and `resultType: "complete"`.
+- `tasks/update`: a known ID gets an empty acknowledgement, since no input is ever requested.
 - `tasks/cancel`: always an empty acknowledgement for a known ID. Cancellation is eventually consistent.
-- Unknown or expired task: `-32602`.
+- A `tasks/*` request that didn't declare the extension gets `-32021`, checked before the task is looked up. An unknown, expired or other client's task gets `-32602` `no such task`, all alike.
 
 | Job status | Task status | Payload |
 |---|---|---|
@@ -513,7 +513,7 @@ The runner sets `RLIMIT_AS` to the problem limit plus 48 MB, below the cgroup's 
 ```
 judge/
   api/         app.py, auth.py, accounts.py, ratelimit.py, routes.py, pages.py, templates/,
-               mcp.py (tools, key check), waiter.py (waits on job_done). Planned: tasks.py
+               mcp.py (tools, key check), tasks.py (Tasks extension), waiter.py (waits on job_done)
   core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel),
                problems.py (visibility), submissions.py (submit, read, cancel), leaderboard.py (ICPC),
                agent.py (run and verify jobs, a client's own jobs)

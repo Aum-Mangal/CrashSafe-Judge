@@ -11,7 +11,8 @@ exactly like missing ones.
 
 A tool that starts a job waits up to 20 s for the verdict, which covers most runs. Otherwise it
 returns the job id with status queued or running, and the agent calls get_result. This works
-with every client; the Tasks extension comes on top of it.
+with every client. A client that declares the Tasks extension gets a task at once instead
+(api/tasks.py).
 """
 
 import hashlib
@@ -27,6 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from api.pages import VERDICTS
+from api.tasks import AS_TASK, Tasks
 from core import agent, problems, submissions
 from core.jobs import IdempotencyConflict, Rejected
 
@@ -161,7 +163,9 @@ async def _start(ctx: Context, create) -> JobReply:
     async def finished() -> bool:
         return await agent.status(app.state.pool, job_id) in ("completed", "cancelled", "dead")
 
-    await app.state.job_waiter.wait(job_id, app.state.mcp_wait_seconds, finished)
+    # A task is polled instead of waited for: answer at once (api/tasks.py)
+    if not ctx.request_context.request.scope["state"].get(AS_TASK):
+        await app.state.job_waiter.wait(job_id, app.state.mcp_wait_seconds, finished)
     return _reply(await agent.get(app.state.pool, client_id, job_id))
 
 
@@ -170,7 +174,7 @@ async def _start(ctx: Context, create) -> JobReply:
 
 def build() -> tuple[MCPServer, Route]:
     """A fresh server per app: the SDK's session manager can only be started once."""
-    server = MCPServer("judge", instructions=INSTRUCTIONS, version="0.1")
+    server = MCPServer("judge", instructions=INSTRUCTIONS, version="0.1", extensions=[Tasks()])
 
     @server.tool(annotations=STARTS_JOB, structured_output=True)
     async def run_code(language: Language, source: Source, ctx: Context,

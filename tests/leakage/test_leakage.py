@@ -34,7 +34,7 @@ from admin.commands import create_client
 from api.app import create_app
 from api.ratelimit import Limit, LoginLimits
 from core import queue
-from helpers import TEST_SECRET, insert_problem, make_contest, open_api
+from helpers import LEGACY, MODERN, TEST_SECRET, insert_problem, make_contest, mcp_request, open_api
 from worker.judge import judge
 
 pytestmark = pytest.mark.sandbox
@@ -45,7 +45,6 @@ MISSING_SLUG = "no-such-problem"
 MISSING_JOB = uuid.UUID("00000000-0000-4000-8000-000000000000")
 UNKNOWN_EMAIL = "nobody@example.com"
 PASSWORD = "leak-test-password"
-MODERN, LEGACY = "2026-07-28", "2025-11-25"  # the two MCP protocol eras
 # The crawl tries the login forms a dozen times from one address. The limits have their own
 # tests (test_api.py); here they would only turn later attempts into 429s.
 UNLIMITED = LoginLimits(per_address=Limit("address", 1000, timedelta(minutes=1)))
@@ -153,19 +152,17 @@ class World:
                 tool("cancel_run", job_id=str(job))
             tool("run_code", language="python", source="print(1)", stdin="")
             tool("verify_code", language="python", source="print(1)", tests=[{"input": "", "expected": "1"}])
+        # The Tasks extension (2026-07-28 only): tools that answer with a task, and the task
+        # methods on every job, with the extension declared and without it
+        for name, arguments in (("run_code", {"stdin": ""}), ("verify_code", {"tests": [{"input": "", "expected": "1"}]})):
+            calls.append({"era": MODERN, "method": "tools/call", "tasks": True, "params": {
+                "name": name, "arguments": {"language": "python", "source": "print(1)", **arguments}}})
+        for slug in values["slug"]:
+            calls.append({"era": MODERN, "method": "tools/call", "tasks": True, "params": {
+                "name": "submit_solution", "arguments": {"problem_slug": slug, "language": "python", "source": "print(1)"}}})
+        for job, method, declared in product(values["job_id"], ("tasks/get", "tasks/update", "tasks/cancel"), (True, False)):
+            calls.append({"era": MODERN, "method": method, "tasks": declared, "params": {"taskId": str(job)}})
         return calls
-
-
-def mcp_request(era: str, method: str, params: dict) -> tuple[dict, dict]:
-    """(headers, JSON body) of one MCP request, as test_mcp.py sends it."""
-    params = dict(params)
-    headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": era}
-    if era == MODERN:
-        headers["Mcp-Method"] = method
-        if method == "tools/call":
-            headers["Mcp-Name"] = params["name"]
-        params["_meta"] = {"io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {}}
-    return headers, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
 
 
 def app_routes() -> list[tuple[str, str]]:
@@ -211,7 +208,8 @@ class Request:
         """The text this request carried. A reply may repeat it, like a login form refilling the
         email: the sender already knows it, so that is no leak."""
         body = json.loads(self.body) if self.body else {}
-        fields = body.get("json") or body.get("form") or body.get("mcp", {}).get("params", {}).get("arguments") or {}
+        mcp = body.get("mcp", {}).get("params", {})
+        fields = body.get("json") or body.get("form") or mcp.get("arguments") or mcp
         return [v for v in fields.values() if isinstance(v, str)]
 
 
@@ -359,6 +357,22 @@ def shape(req: Request, reply) -> tuple:
     return reply.status_code, without_sent(req, reply.text), reply.headers.get("location")
 
 
+# The JSON-RPC errors /mcp is meant to give. The 2026-07-28 wire sends them with HTTP 400.
+DESIGNED_ERRORS = {(-32602, "no such task")}
+MISSING_CAPABILITY = -32021
+
+
+def malformed(req: Request, reply) -> bool:
+    """Did the crawl send something the server couldn't parse, or break it? Then the reply
+    proves nothing about leaks."""
+    if reply.status_code >= 500:
+        return True
+    if req.path != "/mcp" or reply.status_code == 401:
+        return reply.status_code in (400, 422)
+    error = reply.json().get("error")
+    return error is not None and error["code"] != MISSING_CAPABILITY and (error["code"], error["message"]) not in DESIGNED_ERRORS
+
+
 def mcp_reply(replies, w: World, viewer: str, name: str, **arguments):
     call = {"era": MODERN, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
     return replies[Request(viewer, "POST", "/mcp", body=json.dumps({"mcp": call}, sort_keys=True))].json()["result"]
@@ -389,8 +403,8 @@ async def test_no_secret_reaches_any_response(world, dsn, db, caplog):
 
         # The crawl itself worked: no request was malformed or broke the server, and every
         # page was really reached by someone, not just turned away
-        broken = [f"{r.viewer} {r.method} {r.url} {r.body}: {replies[r].status_code}" for r in replies
-                  if replies[r].status_code in (400, 422) or replies[r].status_code >= 500]
+        broken = [f"{r.viewer} {r.method} {r.url} {r.body}: {replies[r].status_code} {replies[r].text[:200]}"
+                  for r in replies if malformed(r, replies[r])]
         assert not broken, "\n".join(broken)
         reached = {(r.method, r.path) for r in replies if r.method == "GET" and replies[r].status_code == 200}
         assert reached == {route for route in app_routes() if route[0] == "GET"}
@@ -408,6 +422,9 @@ async def test_no_secret_reaches_any_response(world, dsn, db, caplog):
         assert w.agent_stdin in ran["structuredContent"]["stdout"]
         tried = mcp_reply(replies, w, "agent", "get_result", job_id=str(w.jobs["agent"][1]))
         assert (tried["structuredContent"]["verdict"], tried["structuredContent"]["failed_test"]) == ("WA", 2)
+        polled = {"era": MODERN, "method": "tasks/get", "tasks": True, "params": {"taskId": str(w.jobs["agent"][0])}}
+        polled = replies[Request("agent", "POST", "/mcp", body=json.dumps({"mcp": polled}, sort_keys=True))].json()["result"]
+        assert polled["status"] == "completed" and w.agent_stdin in polled["result"]["structuredContent"]["stdout"]
         practice = mcp_reply(replies, w, "rival", "get_problem", slug=w.practice)
         assert practice["structuredContent"]["samples"] == [{"input": "s\n", "expected": "s\n"}]
 

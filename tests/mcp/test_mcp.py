@@ -2,33 +2,18 @@
 both protocol eras. No worker runs; each test claims and finishes jobs itself, as one would."""
 
 import asyncio
-import contextlib
 import json
 import time
 import uuid
 
-import httpx
 import pytest
 
 from admin.commands import create_client
-from api.app import create_app
-from core import queue
 from core.queue import Result
-from helpers import TEST_SECRET, insert_problem, make_contest
+from helpers import LEGACY, MODERN, finish_next, insert_problem, make_contest, open_mcp, rpc
 
-MODERN, LEGACY = "2026-07-28", "2025-11-25"
 ERAS = pytest.mark.parametrize("era", [MODERN, LEGACY])
 TOOLS = {"run_code", "verify_code", "submit_solution", "list_problems", "get_problem", "get_result", "cancel_run"}
-
-
-@contextlib.asynccontextmanager
-async def open_mcp(dsn, **options):
-    """The app in-process, with no wait by default: a tool returns its job at once."""
-    app = create_app(dsn, TEST_SECRET, **{"mcp_wait_seconds": 0, **options})
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://judge") as client:
-            client.app = app
-            yield client
 
 
 @pytest.fixture
@@ -42,21 +27,6 @@ async def key(db):
     return (await create_client(db, "agent", 5))[1]
 
 
-async def rpc(client, key, method, params=None, era=MODERN):
-    """One JSON-RPC request. The 2026-07-28 era repeats the method, tool name and protocol
-    version in headers and in params._meta; the 2025-11-25 era needs only the version header."""
-    params = dict(params or {})
-    headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": era}
-    if key is not None:
-        headers["Authorization"] = f"Bearer {key}"
-    if era == MODERN:
-        headers["Mcp-Method"] = method
-        if method == "tools/call":
-            headers["Mcp-Name"] = params["name"]
-        params["_meta"] = {"io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {}}
-    return await client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-
-
 async def tool(client, key, name, era=MODERN, **arguments):
     """Calls a tool. Returns its structured result, or ('error', message) for a tool error."""
     reply = await rpc(client, key, "tools/call", {"name": name, "arguments": arguments}, era)
@@ -66,13 +36,6 @@ async def tool(client, key, name, era=MODERN, **arguments):
         # The SDK puts this in front of a tool's own message
         return "error", result["content"][0]["text"].removeprefix(f"Error executing tool {name}: ")
     return result["structuredContent"]
-
-
-async def finish_next(db, result):
-    """Does what a worker does with the next queued job, minus the judging."""
-    claimed = await queue.claim(db, "test-worker")
-    assert await queue.finish(db, claimed.job_id, "test-worker", claimed.token, result)
-    return claimed.job_id
 
 
 # --- Who may call

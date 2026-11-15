@@ -145,3 +145,56 @@ async def make_contest(conn, starts_in, ends_in, problem_ids=(), code="invite-12
             contest, problem, chr(ord("A") + n),
         )
     return contest
+
+
+# --- MCP (api/mcp.py, api/tasks.py)
+
+MODERN, LEGACY = "2026-07-28", "2025-11-25"  # the two protocol eras /mcp answers
+TASKS = "io.modelcontextprotocol/tasks"
+
+
+def mcp_request(era, method, params=None, tasks=False):
+    """(headers, JSON body) of one MCP request. The 2026-07-28 era repeats the method, the tool
+    or task named, and the protocol version in headers and in params._meta; 2025-11-25 needs only
+    the version header. tasks=True declares the Tasks extension on this one request."""
+    params = dict(params or {})
+    headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": era}
+    if era == MODERN:
+        headers["Mcp-Method"] = method
+        named = params.get("name") if method == "tools/call" else params.get("taskId")
+        if named:
+            headers["Mcp-Name"] = named
+        params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": MODERN,
+            "io.modelcontextprotocol/clientCapabilities": {"extensions": {TASKS: {}}} if tasks else {},
+        }
+    return headers, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+
+
+@contextlib.asynccontextmanager
+async def open_mcp(dsn, **options):
+    """The app in-process, with no wait by default: a tool returns its job at once."""
+    import httpx
+
+    from api.app import create_app
+
+    app = create_app(dsn, TEST_SECRET, **{"mcp_wait_seconds": 0, **options})
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://judge") as client:
+            yield client
+
+
+async def rpc(client, key, method, params=None, era=MODERN, tasks=False):
+    headers, body = mcp_request(era, method, params, tasks)
+    if key is not None:
+        headers["Authorization"] = f"Bearer {key}"
+    return await client.post("/mcp", headers=headers, json=body)
+
+
+async def finish_next(db, result):
+    """Does what a worker does with the next queued job, minus the judging."""
+    from core import queue
+
+    claimed = await queue.claim(db, "test-worker")
+    assert await queue.finish(db, claimed.job_id, "test-worker", claimed.token, result)
+    return claimed.job_id
