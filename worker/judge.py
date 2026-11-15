@@ -57,6 +57,12 @@ async def judge(pool: asyncpg.Pool, claim: Claim, instance: str) -> Result:
     instance names this worker's database; its sandboxes carry it as a label (worker/sandbox.py).
     """
     limits, checker_kind, tests = await _plan(pool, claim)
+    return await judge_tests(claim, limits, checker_kind, tests, instance)
+
+
+async def judge_tests(claim: Claim, limits: Limits, checker_kind: str, tests: list[Test], instance: str) -> Result:
+    """Judges the claim's code against tests it was given, with no database. The worker calls it
+    from judge(); `python -m admin check-problem` calls it with a problem folder's tests."""
     boxes = _Sandboxes(claim, instance)
     try:
         prepared = await _prepare(claim, limits, boxes)
@@ -171,7 +177,7 @@ async def _run_tests(
             verdict, failed_test = result, number
             if not test.hidden:
                 shown = report
-        # A contest submission stops at its first failure; verify_code runs every test
+        # A contest submission stops at its first failure; verify_code and check-problem run every test
         if result != "AC" and claim.kind == "submission":
             break
 

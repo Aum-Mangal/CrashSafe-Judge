@@ -38,7 +38,7 @@ VERDICTS = {
     "IE": "Internal error: the judge failed, not your code",
     "OK": "Ran",
 }
-LANGUAGES = {"cpp": "C++17", "python": "Python 3"}
+LANGUAGES = {"cpp": "C++20", "python": "Python 3"}
 
 
 def _local(request: Request, moment: datetime) -> str:

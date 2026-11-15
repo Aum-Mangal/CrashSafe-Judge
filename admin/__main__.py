@@ -10,6 +10,7 @@ import asyncpg
 
 from admin import commands
 from db.migrate import DEFAULT_DSN
+from worker.sandbox import DockerError
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -18,6 +19,12 @@ def parse(argv: list[str]) -> argparse.Namespace:
 
     p = sub.add_parser("import-problem", help="create or replace a problem from its folder")
     p.add_argument("folder", type=Path)
+
+    p = sub.add_parser("check-problem", help="judge a solution against a problem folder, without importing it")
+    p.add_argument("folder", type=Path)
+    p.add_argument("solution", type=Path, help="a .cpp or .py file")
+    p.add_argument("--expect", default="AC", type=str.upper,
+                   help="the verdict this solution should get, like TLE for a slow one (default AC)")
 
     p = sub.add_parser("create-contest", help="create a contest and print its invite code")
     p.add_argument("--title", required=True)
@@ -59,13 +66,29 @@ async def run(args: argparse.Namespace) -> str:
         await conn.close()
 
 
+async def check(args: argparse.Namespace) -> tuple[str, bool]:
+    """Returns the report and whether the solution did what --expect said. A reference solution
+    (AC expected) also has to leave half the time limit spare."""
+    found = await commands.check_problem(args.folder, args.solution)
+    passed = found.result.verdict == args.expect and not found.too_slow
+    verdict = "as expected" if passed else f"NOT as expected (wanted {args.expect})"
+    return f"{commands.describe(found, args.solution)}\n{verdict}", passed
+
+
 def main(argv: list[str]) -> int:
     args = parse(argv)
     try:
+        if args.command == "check-problem":
+            report, passed = asyncio.run(check(args))
+            print(report)
+            return 0 if passed else 1
         print(asyncio.run(run(args)))
     except commands.AdminError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except DockerError as e:
+        print(f"error: the sandbox failed, not the solution: {e}", file=sys.stderr)
+        return 2
     return 0
 
 

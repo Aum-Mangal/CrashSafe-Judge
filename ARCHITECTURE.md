@@ -337,6 +337,7 @@ Plain HTML from the same process, with no JavaScript: contest list, log in, regi
 ### Admin CLI (no web UI)
 `python -m admin` runs inside `judge-prod` (DECISIONS.md, 113):
 - `import-problem <folder>`: a folder named after the slug, with `problem.toml`, `statement.md`, `samples/` and `hidden/` (`1.in`, `1.out`, ...). Re-importing replaces the tests
+- `check-problem <folder> <solution> [--expect VERDICT]`: judges a `.cpp` or `.py` solution against every test in the folder, in real sandboxes, with no database (126). It prints each test's verdict, CPU, wall time and memory. The exit code is 0 only if the verdict is the expected one (AC by default) and an accepted solution used at most half the time limit
 - `create-contest --title --start '2026-11-28 10:00' --minutes --problems a,b`, which prints a random invite code
 - `create-client --name`, which prints an API key once and stores its sha256
 - `rejudge --problem <slug> --contest <id>`: creates new jobs with `rejudge_of` set, the original `submitted_at` and priority 1, and marks the old ones `superseded` (cancelling any still queued or running). Old results stay for audit. Rejudge jobs don't count against the caps
@@ -521,6 +522,7 @@ judge/
   runner/      judge_runner.c, Makefile
   admin/       __main__.py (arguments), commands.py
   db/          migrate.py, migrations/
+  scripts/     dev-test.sh, build-images.sh, demo.sh (local mock contest), mcp_reconnect.py (Gate 3's MCP demo)
   deploy/      compose.dev.yml, setup-host.sh, wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1,
                check-isolation.sh, images/Dockerfile. Planned: docker-compose.yml, bootstrap.sh, backup.sh, keepalive/
   spike/       probes and results

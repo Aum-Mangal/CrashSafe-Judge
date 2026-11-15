@@ -33,14 +33,14 @@ from core import agent, problems, submissions
 from core.jobs import IdempotencyConflict, Rejected
 
 INSTRUCTIONS = """\
-Runs and judges C++17 and Python 3 code in a sandbox with no network.
+Runs and judges C++20 and Python 3 code in a sandbox with no network.
 run_code runs a program on your stdin. verify_code checks it against tests you give.
 submit_solution judges it against a practice problem's tests, which stay hidden.
 Each waits up to 20 seconds; if the job isn't finished by then you get its job_id, and
 get_result(job_id) returns it later. Results are kept for 24 hours.
 To retry a call safely, pass the same idempotency_key: you get the same job, never a second one."""
 
-Language = Annotated[Literal["cpp", "python"], Field(description="cpp is C++17 (g++), python is Python 3")]
+Language = Annotated[Literal["cpp", "python"], Field(description="cpp is C++20 (g++), python is Python 3")]
 Source = Annotated[str, Field(min_length=1, max_length=65536, description="the whole program, up to 64 KB")]
 Key = Annotated[str | None, Field(max_length=100, description="optional; reuse it to retry this call safely")]
 JobId = Annotated[str, Field(max_length=64, description="the job_id an earlier call returned")]
