@@ -16,6 +16,8 @@ dependencies = [
     "jinja2>=3.1",
     "markdown-it-py>=3.0",
     "python-multipart>=0.0.18",
+    # The official MCP SDK. Pinned exactly: v2 changes quickly, and /mcp relies on its extension API
+    "mcp==2.3.0",
 ]
 
 [project.optional-dependencies]

@@ -1,4 +1,4 @@
-"""Leakage tests (ARCHITECTURE.md §13): secret data never comes out of the API or the pages.
+"""Leakage tests (ARCHITECTURE.md §13): secret data never comes out of the API, the pages or MCP.
 
 Checking one page for one secret proves only that page is safe. So these tests plant a unique
 marker string, a canary, in every secret, then request every route the app has, as every kind
@@ -6,11 +6,15 @@ of viewer, with every interesting argument, and search every response for every 
 viewer must not see. The routes are read from the app itself, so a route added later is crawled
 automatically, and test_every_route_can_be_crawled fails until the crawl knows how to call it.
 
+Viewers: an anonymous visitor, two contestants (ann and bob, signed in), and two MCP clients
+(agent and rival, each with its API key).
+
 Secrets, and who may see them:
-- Hidden test input and answers: nobody, not even the contestant judged on them.
+- Hidden test input and answers, of contest and practice problems: nobody, not even the one
+  judged on them.
 - A problem in a contest that hasn't started (title, statement, slug, samples): nobody.
 - Invite codes, password hashes and the signing secret: nobody.
-- A contestant's code and email: only that contestant.
+- A contestant's code and email, an agent's code, input and output: only their owner.
 
 A search that finds nothing proves something only if it could have found something. So each
 test also has positive controls: the same search finding a secret where it is allowed.
@@ -26,6 +30,7 @@ from itertools import product
 
 import pytest
 
+from admin.commands import create_client
 from api.app import create_app
 from api.ratelimit import Limit, LoginLimits
 from core import queue
@@ -34,15 +39,17 @@ from worker.judge import judge
 
 pytestmark = pytest.mark.sandbox
 
-VIEWERS = ("anon", "ann", "bob")
+VIEWERS = ("anon", "ann", "bob", "agent", "rival")
 MISSING_CONTEST = 999_999
 MISSING_SLUG = "no-such-problem"
 MISSING_JOB = uuid.UUID("00000000-0000-4000-8000-000000000000")
 UNKNOWN_EMAIL = "nobody@example.com"
 PASSWORD = "leak-test-password"
+MODERN, LEGACY = "2026-07-28", "2025-11-25"  # the two MCP protocol eras
 # The crawl tries the login forms a dozen times from one address. The limits have their own
 # tests (test_api.py); here they would only turn later attempts into 429s.
 UNLIMITED = LoginLimits(per_address=Limit("address", 1000, timedelta(minutes=1)))
+OPTIONS = {"cookie_secure": False, "leaderboard_seconds": 0, "login_limits": UNLIMITED, "mcp_wait_seconds": 0}
 
 # Both pass the sample (its input is its answer), then print the hidden test's input, which is
 # exactly what a cheater would try. One prints it and gets WA, the other also crashes: RE.
@@ -51,7 +58,7 @@ ECHO_THEN_CRASH = ECHO + "if data != 's\\n':\n    raise SystemExit(3)\n"
 
 
 class World:
-    """The planted data: ids, tokens and the canaries, each unique to this run."""
+    """The planted data: ids, tokens, keys and the canaries, each unique to this run."""
 
     def __init__(self):
         def canary(name):
@@ -60,6 +67,8 @@ class World:
         self.never = {  # nobody may ever see these
             "hidden input": canary("hiddenin"),
             "hidden answer": canary("hiddenout"),
+            "practice hidden input": canary("practicein"),
+            "practice hidden answer": canary("practiceout"),
             "early title": canary("earlytitle"),
             "early statement": canary("earlystatement"),
             "early slug": canary("earlyslug"),
@@ -71,16 +80,21 @@ class World:
             "password hash": "$argon2",
             "signing secret": TEST_SECRET,
         }
+        self.hidden = [k for k in self.never if "hidden" in k]
         self.emails = {name: f"{name}{uuid.uuid4().hex[:10]}@example.com" for name in ("ann", "bob")}
         self.source = canary("source")
-        self.private = {  # each contestant's own; everyone else must not see them
+        self.agent_source, self.agent_stdin = canary("agentsource"), canary("agentstdin")
+        self.private = {  # each owner's own; everyone else must not see them
             "ann": {"ann's email": self.emails["ann"], "ann's code": self.source},
             "bob": {"bob's email": self.emails["bob"]},
+            # run_code prints its stdin, so this is also the agent's output
+            "agent": {"agent's code": self.agent_source, "agent's stdin and output": self.agent_stdin},
         }
         self.statement = canary("statement")  # a running contest's statement: anyone may see it
-        self.tokens: dict[str, str] = {}
-        self.ann_jobs: list[uuid.UUID] = []
-        self.slug = self.running = self.upcoming = None
+        self.tokens: dict[str, str] = {}  # contestants' JWTs
+        self.keys: dict[str, str] = {}  # MCP clients' API keys
+        self.jobs: dict[str, list[uuid.UUID]] = {"ann": [], "agent": []}
+        self.slug = self.practice = self.running = self.upcoming = None
 
     def forbidden(self, viewer: str) -> dict[str, str]:
         secret = dict(self.never)
@@ -90,17 +104,18 @@ class World:
         return secret
 
     def values(self) -> dict[str, list]:
-        """What each path parameter is filled with: real ones, secret ones and missing ones."""
+        """What each parameter is filled with: real ones, secret ones and missing ones."""
         return {
             "contest_id": [self.running, self.upcoming, MISSING_CONTEST],
             "label": ["A", "Z"],
-            "slug": [self.slug, self.never["early slug"], MISSING_SLUG],
-            "job_id": [*self.ann_jobs, MISSING_JOB],
+            "slug": [self.slug, self.practice, self.never["early slug"], MISSING_SLUG],
+            "job_id": [*self.jobs["ann"], *self.jobs["agent"], MISSING_JOB],
         }
 
     def bodies(self) -> dict[tuple[str, str], list[dict]]:
         """How to call each route that writes. Requests that would succeed are included: a
         reply to a real submission must leak nothing either."""
+        values = self.values()
         wrong_register = {"email": "new@example.com", "display_name": "New", "password": PASSWORD,
                           "invite_code": "wrong-code"}
         # A wrong password for a real account, and for no account: see twin()
@@ -110,14 +125,47 @@ class World:
             ("POST", "/auth/login"): [{"json": b} for b in wrong_logins],
             ("POST", "/submissions"): [
                 {"json": {"problem": slug, "language": "python", "source": "print(1)", "contest_id": contest}}
-                for slug in self.values()["slug"] for contest in (None, self.running, self.upcoming)
+                for slug in values["slug"] for contest in (None, self.running, self.upcoming)
             ],
             ("DELETE", "/submissions/{job_id}"): [{}],
             ("POST", "/login"): [{"form": b} for b in wrong_logins],
             ("POST", "/register"): [{"form": wrong_register}],
             ("POST", "/logout"): [{"form": {}}],
             ("POST", "/c/{contest_id}/{label}"): [{"form": {"language": "python", "source": "print(1)"}}],
+            ("POST", "/mcp"): [{"mcp": call} for call in self.mcp_calls()],
         }
+
+    def mcp_calls(self) -> list[dict]:
+        """Every tool with every interesting argument, in both protocol eras."""
+        values = self.values()
+        calls = [{"era": MODERN, "method": "server/discover", "params": {}}]
+        for era in (MODERN, LEGACY):
+            def tool(name, **arguments):
+                calls.append({"era": era, "method": "tools/call", "params": {"name": name, "arguments": arguments}})
+
+            calls.append({"era": era, "method": "tools/list", "params": {}})
+            tool("list_problems")
+            for slug in values["slug"]:
+                tool("get_problem", slug=slug)
+                tool("submit_solution", problem_slug=slug, language="python", source="print(1)")
+            for job in values["job_id"]:
+                tool("get_result", job_id=str(job))
+                tool("cancel_run", job_id=str(job))
+            tool("run_code", language="python", source="print(1)", stdin="")
+            tool("verify_code", language="python", source="print(1)", tests=[{"input": "", "expected": "1"}])
+        return calls
+
+
+def mcp_request(era: str, method: str, params: dict) -> tuple[dict, dict]:
+    """(headers, JSON body) of one MCP request, as test_mcp.py sends it."""
+    params = dict(params)
+    headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": era}
+    if era == MODERN:
+        headers["Mcp-Method"] = method
+        if method == "tools/call":
+            headers["Mcp-Name"] = params["name"]
+        params["_meta"] = {"io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {}}
+    return headers, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
 
 
 def app_routes() -> list[tuple[str, str]]:
@@ -163,7 +211,7 @@ class Request:
         """The text this request carried. A reply may repeat it, like a login form refilling the
         email: the sender already knows it, so that is no leak."""
         body = json.loads(self.body) if self.body else {}
-        fields = body.get("json") or body.get("form") or {}
+        fields = body.get("json") or body.get("form") or body.get("mcp", {}).get("params", {}).get("arguments") or {}
         return [v for v in fields.values() if isinstance(v, str)]
 
 
@@ -175,29 +223,45 @@ def twin(w: World, req: Request) -> Request:
         params["slug"] = MISSING_SLUG
     if params.get("contest_id") == w.upcoming and params.get("label") == "A":
         params["label"] = "Z"
-    if req.viewer != "ann" and params.get("job_id") in w.ann_jobs:
+    # A job you don't own looks like no job, by REST, the pages or MCP
+    others = [job for owner, jobs in w.jobs.items() if owner != req.viewer for job in jobs]
+    if params.get("job_id") in others:
         params["job_id"] = MISSING_JOB
     # A failed login must not reveal whether the account exists
     body = req.body.replace(w.never["early slug"], MISSING_SLUG).replace(w.emails["ann"], UNKNOWN_EMAIL)
+    for job in others:
+        body = body.replace(str(job), str(MISSING_JOB))
     return replace(req, params=tuple(sorted(params.items())), body=body)
 
 
 def credentials(w: World, viewer: str) -> dict[str, str]:
-    """A signed-in viewer sends the same token both ways: as a REST token and as the page cookie."""
-    if viewer == "anon":
+    """A contestant sends the same token both ways: as a REST token and as the page cookie. An MCP
+    client sends its API key."""
+    if viewer in w.keys:
+        return {"Authorization": f"Bearer {w.keys[viewer]}"}
+    if viewer not in w.tokens:
         return {}
     token = w.tokens[viewer]
     return {"Authorization": f"Bearer {token}", "Cookie": f"judge_session={token}"}
+
+
+async def call_tool(client, w: World, viewer: str, name: str, era: str = MODERN, **arguments) -> dict:
+    headers, body = mcp_request(era, "tools/call", {"name": name, "arguments": arguments})
+    reply = await client.post("/mcp", headers={**headers, **credentials(w, viewer)}, json=body)
+    assert reply.status_code == 200, reply.text
+    return reply.json()["result"]
 
 
 @pytest.fixture
 async def world(dsn, db, pool, caplog):
     caplog.set_level(logging.DEBUG)  # so test_no_secret_reaches_any_response can read every log line
     w = World()
-    sample, hidden = ("s\n", "s\n", True), (w.never["hidden input"] + "\n", w.never["hidden answer"] + "\n", False)
-    running_problem = await insert_problem(db, [sample, hidden])
+    sample = ("s\n", "s\n", True)
+    running_problem = await insert_problem(db, [sample, (w.never["hidden input"] + "\n", w.never["hidden answer"] + "\n", False)])
     await db.execute("UPDATE problems SET statement_md = $2 WHERE id = $1", running_problem, w.statement)
-    w.slug = await db.fetchval("SELECT slug FROM problems WHERE id = $1", running_problem)
+    practice = await insert_problem(db, [sample, (w.never["practice hidden input"] + "\n", w.never["practice hidden answer"] + "\n", False)])
+    await db.execute("UPDATE problems SET is_public = true WHERE id = $1", practice)
+    w.slug, w.practice = [await db.fetchval("SELECT slug FROM problems WHERE id = $1", p) for p in (running_problem, practice)]
     early = await insert_problem(db, [
         (w.never["early sample"] + "\n", "1\n", True),
         (w.never["early hidden input"] + "\n", w.never["early hidden answer"] + "\n", False),
@@ -208,8 +272,10 @@ async def world(dsn, db, pool, caplog):
     )
     w.running = await make_contest(db, -60, 3600, [running_problem], code=w.never["invite code"])
     w.upcoming = await make_contest(db, 3600, 7200, [early], code=w.never["early invite code"])
+    for name in ("agent", "rival"):
+        w.keys[name] = (await create_client(db, name, 20))[1]
 
-    async with open_api(dsn, cookie_secure=False, leaderboard_seconds=0, login_limits=UNLIMITED) as client:
+    async with open_api(dsn, **OPTIONS) as client:
         for name, email in w.emails.items():
             reply = await client.post("/auth/register", json={
                 "email": email, "display_name": name.title(), "password": PASSWORD, "invite_code": w.never["invite code"],
@@ -221,10 +287,15 @@ async def world(dsn, db, pool, caplog):
                 "problem": w.slug, "language": "python", "source": f"{program}# {w.source}\n", "contest_id": w.running,
             })
             assert reply.status_code == 201, reply.text
-            w.ann_jobs.append(uuid.UUID(reply.json()["id"]))
+            w.jobs["ann"].append(uuid.UUID(reply.json()["id"]))
+        # The agent runs its code on its own input, and tries the echo trick on a practice problem
+        ran = await call_tool(client, w, "agent", "run_code", language="python",
+                              source=f"{ECHO}# {w.agent_source}\n", stdin=w.agent_stdin + "\n")
+        tried = await call_tool(client, w, "agent", "submit_solution", problem_slug=w.practice, language="python", source=ECHO)
+        w.jobs["agent"] += [uuid.UUID(r["structuredContent"]["job_id"]) for r in (ran, tried)]
 
     # Judged in real sandboxes, as a worker would
-    for _ in w.ann_jobs:
+    for _ in range(len(w.jobs["ann"]) + len(w.jobs["agent"])):
         claimed = await queue.claim(db, "leak-worker")
         result = await judge(pool, claimed, await db.fetchval("SELECT current_database()"))
         assert await queue.finish(db, claimed.job_id, "leak-worker", claimed.token, result)
@@ -243,7 +314,7 @@ async def crawl(client, w: World) -> dict[Request, object]:
             if method == "GET":
                 reads.append(Request(viewer, method, path, params))
             else:
-                writes += [Request(viewer, method, path, params, json.dumps(b, sort_keys=True))
+                writes += [Request(viewer, method, path, params, json.dumps(b, sort_keys=True, default=str))
                            for b in bodies[(method, path)]]
 
     csrf = {}
@@ -256,7 +327,10 @@ async def crawl(client, w: World) -> dict[Request, object]:
         client.cookies.clear()  # each request carries only its own viewer's credentials
         headers = credentials(w, req.viewer)
         body = json.loads(req.body) if req.body else {}
-        if "json" in body:
+        if "mcp" in body:
+            mcp_headers, payload = mcp_request(**body["mcp"])
+            reply = await client.request(req.method, req.url, headers={**mcp_headers, **headers}, json=payload)
+        elif "json" in body:
             headers["Idempotency-Key"] = uuid.uuid4().hex
             reply = await client.request(req.method, req.url, headers=headers, json=body["json"])
         elif "form" in body:
@@ -285,9 +359,14 @@ def shape(req: Request, reply) -> tuple:
     return reply.status_code, without_sent(req, reply.text), reply.headers.get("location")
 
 
+def mcp_reply(replies, w: World, viewer: str, name: str, **arguments):
+    call = {"era": MODERN, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+    return replies[Request(viewer, "POST", "/mcp", body=json.dumps({"mcp": call}, sort_keys=True))].json()["result"]
+
+
 async def test_no_secret_reaches_any_response(world, dsn, db, caplog):
     w = world
-    async with open_api(dsn, cookie_secure=False, leaderboard_seconds=0, login_limits=UNLIMITED) as client:
+    async with open_api(dsn, **OPTIONS) as client:
         replies = await crawl(client, w)
 
         leaks = [
@@ -310,53 +389,64 @@ async def test_no_secret_reaches_any_response(world, dsn, db, caplog):
 
         # The crawl itself worked: no request was malformed or broke the server, and every
         # page was really reached by someone, not just turned away
-        broken = [f"{r.viewer} {r.method} {r.url}: {replies[r].status_code}" for r in replies
-                  if replies[r].status_code == 422 or replies[r].status_code >= 500]
+        broken = [f"{r.viewer} {r.method} {r.url} {r.body}: {replies[r].status_code}" for r in replies
+                  if replies[r].status_code in (400, 422) or replies[r].status_code >= 500]
         assert not broken, "\n".join(broken)
         reached = {(r.method, r.path) for r in replies if r.method == "GET" and replies[r].status_code == 200}
         assert reached == {route for route in app_routes() if route[0] == "GET"}
+        mcp_ok = [r for r in replies if r.path == "/mcp" and replies[r].status_code == 200 and "error" not in replies[r].json()]
+        assert {r.viewer for r in mcp_ok} == {"agent", "rival"}  # MCP answered both clients, and only them
 
         # Positive controls: the same search finds what each viewer is allowed to see
-        mine = replies[Request("ann", "GET", "/submissions/{job_id}", (("job_id", w.ann_jobs[0]),))]
+        mine = replies[Request("ann", "GET", "/submissions/{job_id}", (("job_id", w.jobs["ann"][0]),))]
         assert mine.json()["verdict"] == "WA" and mine.json()["failed_test"] == 2  # REST doesn't return code
-        assert w.source in replies[Request("ann", "GET", "/s/{job_id}", (("job_id", w.ann_jobs[0]),))].text
-        assert w.source in replies[Request("ann", "GET", "/s/{job_id}", (("job_id", w.ann_jobs[1]),))].text
+        assert w.source in replies[Request("ann", "GET", "/s/{job_id}", (("job_id", w.jobs["ann"][0]),))].text
+        assert w.source in replies[Request("ann", "GET", "/s/{job_id}", (("job_id", w.jobs["ann"][1]),))].text
         public = replies[Request("anon", "GET", "/c/{contest_id}/{label}", (("contest_id", w.running), ("label", "A")))]
         assert w.statement in public.text
+        ran = mcp_reply(replies, w, "agent", "get_result", job_id=str(w.jobs["agent"][0]))
+        assert w.agent_stdin in ran["structuredContent"]["stdout"]
+        tried = mcp_reply(replies, w, "agent", "get_result", job_id=str(w.jobs["agent"][1]))
+        assert (tried["structuredContent"]["verdict"], tried["structuredContent"]["failed_test"]) == ("WA", 2)
+        practice = mcp_reply(replies, w, "rival", "get_problem", slug=w.practice)
+        assert practice["structuredContent"]["samples"] == [{"input": "s\n", "expected": "s\n"}]
 
         # Only the clock kept the early problem hidden: once its contest starts, the crawl finds it
         await db.execute("UPDATE contests SET starts_at = now() - interval '1 minute' WHERE id = $1", w.upcoming)
         shown = await client.get(f"/problems/{w.never['early slug']}")
         assert w.never["early title"] in shown.text and w.never["early sample"] in shown.text
         assert w.never["early statement"] in (await client.get(f"/c/{w.upcoming}/A")).text
+        assert w.never["early title"] in json.dumps(await call_tool(client, w, "rival", "get_problem", slug=w.never["early slug"]))
         assert w.never["early hidden input"] not in shown.text
 
-    # Source and program output are never logged (ARCHITECTURE.md §10, Data)
+    # Source, input and program output are never logged (ARCHITECTURE.md §10, Data)
     logged = [r.getMessage() for r in caplog.get_records("setup") + caplog.get_records("call")]
-    for what in ("hidden input", "hidden answer"):
-        assert not any(w.never[what] in line for line in logged), what
-    assert not any(w.source in line for line in logged), "source"
+    for what, value in [*((h, w.never[h]) for h in w.hidden), ("ann's code", w.source),
+                        ("agent's code", w.agent_source), ("agent's stdin", w.agent_stdin)]:
+        assert not any(value in line for line in logged), what
 
 
 async def test_hidden_test_output_is_never_stored(world, db):
     """Data that is never stored can't leak through any future bug (ARCHITECTURE.md §4)."""
     w = world
-    judged = await db.fetch("SELECT verdict, failed_test FROM results ORDER BY verdict")
-    assert [tuple(r) for r in judged] == [("RE", 2), ("WA", 2)]  # both reached the hidden test
+    judged = await db.fetch("SELECT verdict, failed_test FROM results ORDER BY verdict, failed_test")
+    # ann's two reached the hidden test; the agent's run printed its input; its echo reached the hidden test
+    assert [tuple(r) for r in judged] == [("OK", None), ("RE", 2), ("WA", 2), ("WA", 2)]
 
     tables = [r["tablename"] for r in await db.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")]
 
     async def rows_holding(table, text):
         return await db.fetchval(f'SELECT count(*) FROM "{table}" t WHERE t::text LIKE $1', f"%{text}%")
 
-    # Both programs printed the hidden input to stdout and stderr. Only testcases may hold it.
+    # Three programs printed a hidden input to stdout and stderr. Only testcases may hold it.
     for table in tables:
         if table != "testcases":
-            for what in ("hidden input", "hidden answer"):
+            for what in w.hidden:
                 assert await rows_holding(table, w.never[what]) == 0, f"{what} stored in {table}"
-    # Positive control: the same scan does find text that is stored
+    # Positive controls: the same scan does find text that is stored
     assert await rows_holding("testcases", w.never["hidden input"]) == 1
     assert await rows_holding("jobs", w.source) == 2
+    assert await rows_holding("results", w.agent_stdin) == 1  # run_code keeps its output
 
 
 def test_every_route_can_be_crawled():

@@ -3,6 +3,7 @@
 """
 
 import json
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
@@ -10,7 +11,8 @@ import asyncpg
 from core import problems, queue
 from core.jobs import NewJob, create_job
 
-CONTEST_PRIORITY, PRACTICE_PRIORITY = 0, 1
+CONTEST_PRIORITY, PRACTICE_PRIORITY, AGENT_PRIORITY = 0, 1, 2
+AGENT_EXPIRY = timedelta(hours=24)  # an API client's jobs and results (ARCHITECTURE.md §10, Data)
 
 
 class NotFound(Exception):
@@ -29,9 +31,16 @@ async def submit(
     source: str,
     contest_id: int | None = None,
     idempotency_key: str | None = None,
+    owner_type: str = "user",
 ) -> tuple[UUID, bool]:
     """Returns (job id, created). Raises NotFound, NotAllowed, and core.jobs' Rejected and
-    IdempotencyConflict."""
+    IdempotencyConflict.
+
+    owner_type 'client' is an MCP agent (user_id is then its api_clients id). Agents may submit
+    only to public problems, never into a contest (DECISIONS.md, 28), and their jobs expire."""
+    agent = owner_type == "client"
+    if agent and contest_id is not None:
+        raise NotAllowed("agents can't submit to a contest")
     async with conn.transaction():
         # now() is fixed for the whole transaction, so the window checked below is the same
         # instant that create_job stores as submitted_at (DECISIONS.md, 100)
@@ -41,8 +50,8 @@ async def submit(
         # A retry of a request that was already accepted gets its job, even if the contest
         # has ended since. create_job compares the request itself.
         retry = idempotency_key is not None and await conn.fetchval(
-            "SELECT 1 FROM jobs WHERE owner_type = 'user' AND owner_id = $1 AND idempotency_key = $2",
-            user_id, idempotency_key,
+            "SELECT 1 FROM jobs WHERE owner_type = $3 AND owner_id = $1 AND idempotency_key = $2",
+            user_id, idempotency_key, owner_type,
         )
         if contest_id is not None:
             running = await conn.fetchval(
@@ -61,14 +70,14 @@ async def submit(
         else:
             if not problem["is_public"] and not retry:
                 raise NotAllowed("this problem only takes submissions through its contest")
-            priority = PRACTICE_PRIORITY
+            priority = AGENT_PRIORITY if agent else PRACTICE_PRIORITY
 
         return await create_job(
             conn,
             NewJob(
-                kind="submission", owner_type="user", owner_id=user_id, language=language, source=source,
+                kind="submission", owner_type=owner_type, owner_id=user_id, language=language, source=source,
                 priority=priority, problem_id=problem["id"], contest_id=contest_id,
-                idempotency_key=idempotency_key,
+                idempotency_key=idempotency_key, expires_in=AGENT_EXPIRY if agent else None,
             ),
         )
 

@@ -342,7 +342,8 @@ Plain HTML from the same process, with no JavaScript: contest list, log in, regi
 - `rejudge --problem <slug> --contest <id>`: creates new jobs with `rejudge_of` set, the original `submitted_at` and priority 1, and marks the old ones `superseded` (cancelling any still queued or running). Old results stay for audit. Rejudge jobs don't count against the caps
 
 ### MCP `/mcp` (Streamable HTTP, stateless)
-- **Auth:** Bearer API key resolves to an `api_clients` row. Keys are issued by hand with the admin CLI.
+- **Auth:** Bearer API key resolves to an `api_clients` row. Keys are issued by hand with the admin CLI. `RequireApiKey` in `api/mcp.py` checks the key before the SDK sees the request: a missing or unknown one gets 401 (DECISIONS.md, 118).
+- **Ownership:** a client sees and cancels only its own jobs. Another client's job, an expired one and a made-up id all answer `no such job`.
 - **Tools:**
   - `run_code(language, source, stdin?, idempotency_key?)`
   - `verify_code(language, source, tests[], idempotency_key?)`
@@ -372,7 +373,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 **Clients without Tasks:** wait up to 20 s for `job_done`, otherwise return `job_id` and tell the agent to call `get_result`. Treat this as the main path, because client support is uneven.
 
-**Implementation:** use the official Python SDK v2 for the base protocol and hand-write the Tasks layer. Week 3 starts by checking that the SDK lets a `tools/call` return a task result. If not, `/mcp` becomes a small hand-written JSON-RPC route.
+**Implementation:** the official Python SDK, pinned at 2.3.0, for the base protocol, and a hand-written Tasks layer. Checked on 15 Nov: the SDK answers both the 2025-11-25 and the 2026-07-28 protocols, and its `Extension` API can add the `tasks/*` methods and return `resultType: "task"` from `tools/call`, so no hand-written JSON-RPC route is needed (DECISIONS.md, 117). `/mcp` is a POST-only route inside the API process, stateless, with plain JSON replies. A tool waits for its job on `LISTEN job_done`, re-reading the job every 2 s in case a notification was lost (119).
 
 ---
 
@@ -397,7 +398,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 **Login limits:** 20 login or registration attempts a minute per address, and 10 failed logins in 15 minutes per email. Counters store only hashes of the address and email. The address header from the tunnel is trusted only when configured (DECISIONS.md, 102).
 
-**Data:** source and output are never logged. Agent jobs and results expire after 24 h. API keys are hashed and compared in constant time. Backups contain emails and password hashes, so they are encrypted with `age` before being copied to OneDrive.
+**Data:** source and output are never logged. Agent jobs and results expire after 24 h. API keys are stored only as sha256 and looked up by that hash. A lookup's timing could hint at a hash's first bytes, which doesn't help anyone guess a 256-bit key. Backups contain emails and password hashes, so they are encrypted with `age` before being copied to OneDrive.
 
 ---
 
@@ -511,10 +512,11 @@ The runner sets `RLIMIT_AS` to the problem limit plus 48 MB, below the cgroup's 
 
 ```
 judge/
-  api/         app.py, auth.py, accounts.py, ratelimit.py, routes.py, pages.py, templates/
-  mcp/         server.py, tools.py, tasks.py, schemas.py
+  api/         app.py, auth.py, accounts.py, ratelimit.py, routes.py, pages.py, templates/,
+               mcp.py (tools, key check), waiter.py (waits on job_done). Planned: tasks.py
   core/        jobs.py (create), queue.py (claim, heartbeat, finish, release, reap, cancel),
-               problems.py (visibility), submissions.py (submit, read, cancel), leaderboard.py (ICPC)
+               problems.py (visibility), submissions.py (submit, read, cancel), leaderboard.py (ICPC),
+               agent.py (run and verify jobs, a client's own jobs)
   worker/      main.py (claim, reaper and reconcile loops), judge.py, sandbox.py, checker.py, verdict.py
   runner/      judge_runner.c, Makefile
   admin/       __main__.py (arguments), commands.py
@@ -530,7 +532,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/` so MCP can share them. `mcp/`, `loadtest/`, `agent_eval/` and `problems/` are not built yet (weeks 3 and 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/`, `agent_eval/` and `problems/` are not built yet (week 4).
 
 ---
 

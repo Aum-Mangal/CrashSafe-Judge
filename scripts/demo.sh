@@ -5,6 +5,7 @@
 #
 # Demo account (test values, this database only): demo@example.com / demo-password-1
 # Invite code for registering more: demo-invite
+# An MCP key for this database is printed at the start: use it as Authorization: Bearer <key>
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -60,8 +61,11 @@ async def main():
 asyncio.run(main())
 EOF
 
+KEY=$("$VENV/bin/python" -m admin create-client --name demo-agent | sed -n 's/.*: \(jk_.*\)$/\1/p')
+
 WORKER_ID=demo-worker "$VENV/bin/python" -m worker.main &
 worker=$!
 trap 'kill $worker 2> /dev/null' EXIT
 echo "Open http://localhost:8000"
+echo "MCP: http://localhost:8000/mcp with Authorization: Bearer $KEY"
 JWT_SECRET=$(openssl rand -hex 32) COOKIE_SECURE=0 "$VENV/bin/uvicorn" api.app:from_env --factory --host 127.0.0.1 --port 8000
