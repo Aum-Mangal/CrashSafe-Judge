@@ -286,7 +286,7 @@ If the sandbox dies during `verify_code`, the current test gets its verdict and 
 **Measurement**
 - CPU and peak memory are per test, from the runner. The container cgroup is only a hard limit: the worker does not read it (DECISIONS.md, 83).
 - The output limit (default 16 MB) is for judging. The 64 KB cap is only for what gets stored.
-- Limits are calibrated with runsc in `judge-prod`. Overhead against plain runc is published.
+- Limits are calibrated with runsc in `judge-prod`. Overhead against plain runc is published. `loadtest/timing.py` measures both. The first run, in the dev distro on 16 Nov, is in `loadtest/results/timing-dev.md` (DECISIONS.md, 136). In short: computation costs 4% more under gVisor, 200 000 tiny system calls 13 times more, and touching 256 MB 1.7 times more. Each test's `docker exec` adds about 115 ms with either runtime. gVisor reports CPU time in steps of 10 ms. A problem's time limit therefore comes from its reference solution measured under runsc, with `check-problem`, never from a run outside the sandbox.
 
 **Job budgets**
 
@@ -530,7 +530,7 @@ judge/
                wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1, package-for-prod.ps1,
                prod-test.sh, check-isolation.sh, images/Dockerfile
   spike/       probes and results
-  loadtest/    k6/
+  loadtest/    timing.py (runsc vs runc), results/. Planned: k6/
   agent_eval/  optional agent benchmark
   problems/    contest problem folders (hidden tests stay out of the public repo)
   .github/workflows/  ci.yml, healthcheck.yml
@@ -538,7 +538,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/`, `agent_eval/` and `problems/` are not built yet (week 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/` has the timing benchmark so far. `agent_eval/` and `problems/` are not built yet (week 4).
 
 ---
 

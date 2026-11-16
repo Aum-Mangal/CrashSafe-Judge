@@ -103,10 +103,14 @@ class Sandbox:
         self.id = container_id
 
     @classmethod
-    async def create(cls, language: str, memory_mb: int, job_id, token: int, instance: str) -> "Sandbox":
+    async def create(
+        cls, language: str, memory_mb: int, job_id, token: int, instance: str, runtime: str = "runsc"
+    ) -> "Sandbox":
+        """runtime is always runsc when judging. Only the timing benchmark (loadtest/timing.py)
+        passes runc, to measure what gVisor costs on the same programs."""
         memory = f"{memory_mb + CGROUP_HEADROOM_MB}m"
         code, out, err = await docker(
-            "run", "-d", "--runtime=runsc", "--network", "none", "--read-only",
+            "run", "-d", f"--runtime={runtime}", "--network", "none", "--read-only",
             "--tmpfs", f"/work:rw,exec,size=64m,uid={SANDBOX_UID},gid={SANDBOX_UID},mode=0700",
             # /work must be the only writable place, because it's the only one emptied between tests.
             # Docker adds a writable /dev/shm and gVisor a writable /tmp unless told otherwise.
