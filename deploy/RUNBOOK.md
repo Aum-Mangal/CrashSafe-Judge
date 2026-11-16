@@ -84,3 +84,11 @@ The judge account must stay signed in, in the background (switch user, don't sig
 
 4. Delete `/root/backup-key.txt`.
 5. Publish two numbers: the minutes from deletion to `Ready`, and the data lost (everything after the backup's time).
+
+## 6. Throughput test (Wed 25)
+
+Run it after step 2, from the same commit, and before the contest: it adds a public practice problem, `loadtest-sum`, 30 accounts nobody can log in to, and a few hundred jobs.
+
+1. From your account: `powershell -ExecutionPolicy Bypass -File deploy\package-for-prod.ps1 -Throughput`. It copies the k6 that the dev distro checked against Grafana's checksum (DECISIONS.md, 137).
+2. Signed in as the judge account: double-click `run-in-prod.cmd`. It checks k6's hash inside judge-prod before installing it, then runs about 15 minutes.
+3. Back in your account: the `result-*.txt` file is the markdown table. Save it as `loadtest/results/throughput-prod.md`. A number in the "Not AC" column above 0 means the judge gave a wrong verdict under load: that is a bug, not a slow run.

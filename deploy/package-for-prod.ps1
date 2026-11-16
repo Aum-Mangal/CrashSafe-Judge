@@ -1,7 +1,9 @@
 # Packages committed code for judge-prod and writes the .cmd file the judge account runs.
 #
 # 1. From your own account:  powershell -ExecutionPolicy Bypass -File deploy\package-for-prod.ps1
-#    (add -Bootstrap to start or update the running judge instead of running the tests)
+#    (add -Bootstrap to start or update the running judge instead of running the tests, or
+#    -Throughput to run loadtest/throughput.sh against the running judge, with k6 copied in
+#    from the dev distro)
 # 2. Signed in as judgehost:  double-click C:\Users\Public\judge-transfer\run-in-prod.cmd
 # 3. Back in your account:    read the result-*.txt file it wrote next to it
 #
@@ -10,10 +12,13 @@ param(
     [string]$Ref = 'HEAD',
     [string]$Transfer = 'C:\Users\Public\judge-transfer',
     [string]$Name = 'judge-prod',
-    [switch]$Bootstrap
+    [string]$DevDistro = 'Ubuntu-24.04',
+    [switch]$Bootstrap,
+    [switch]$Throughput
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Bootstrap -and $Throughput) { throw 'Choose -Bootstrap or -Throughput, not both' }
 $repo = Split-Path -Parent $PSScriptRoot
 $commit = (git -C $repo rev-parse --short $Ref).Trim()
 if ($Ref -eq 'HEAD' -and (git -C $repo status --porcelain)) {
@@ -29,8 +34,27 @@ if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
 Copy-Item "$PSScriptRoot\windows\register-tasks.ps1", "$PSScriptRoot\windows\copy-backups.ps1" $Transfer -Force
 
 # -Bootstrap starts or updates the judge itself (deploy/bootstrap.sh); without it, the tests run
-if ($Bootstrap) { $script = 'deploy/bootstrap.sh'; $doing = 'Starting the judge.' }
-else { $script = 'deploy/prod-test.sh'; $doing = 'Running the tests.' }
+$installK6 = ''
+if ($Bootstrap) { $script = 'deploy/bootstrap.sh'; $doing = 'Starting the judge. The first run installs packages and builds images, so it takes several minutes...' }
+elseif ($Throughput) {
+    $script = 'loadtest/throughput.sh'; $doing = 'Running the throughput test, about 15 minutes.'
+    # The k6 checked against Grafana's published checksum in the dev distro (DECISIONS.md, 137).
+    # cmd's > keeps the bytes; the hash taken here is checked again inside judge-prod, so a file
+    # changed in the shared folder before the run is refused.
+    cmd /c "wsl -d $DevDistro -u root -- cat /usr/local/bin/k6 > `"$Transfer\k6`""
+    if ($LASTEXITCODE -ne 0) { throw "couldn't copy k6 out of $DevDistro" }
+    $k6Hash = (Get-FileHash -Algorithm SHA256 "$Transfer\k6").Hash.ToLower()
+    $installK6 = @"
+echo Installing k6...
+wsl -d $Name -u root -- bash -c "cat > /usr/local/bin/k6.part && echo '$k6Hash  /usr/local/bin/k6.part' | sha256sum --check --quiet && chmod 755 /usr/local/bin/k6.part && mv /usr/local/bin/k6.part /usr/local/bin/k6" < "%~dp0k6"
+if errorlevel 1 (
+    echo k6 is not the file that was packaged. Nothing was run.
+    pause
+    exit /b 1
+)
+"@
+}
+else { $script = 'deploy/prod-test.sh'; $doing = 'Running the tests. The first run installs packages and builds images, so it takes several minutes...' }
 
 # A new result file each run: a file judgehost wrote can't be overwritten from your account, or the reverse
 $result = "result-$commit-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
@@ -45,7 +69,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo $doing The first run installs packages and builds images, so it takes several minutes...
+$installK6
+echo $doing
 wsl -d $Name -u root -- bash /opt/judge/$script > "%~dp0$result" 2>&1
 echo Finished. The output is in %~dp0$result
 pause

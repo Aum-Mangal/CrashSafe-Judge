@@ -530,7 +530,7 @@ judge/
                wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1, package-for-prod.ps1,
                prod-test.sh, check-isolation.sh, images/Dockerfile
   spike/       probes and results
-  loadtest/    timing.py (runsc vs runc), results/. Planned: k6/
+  loadtest/    timing.py (runsc vs runc), throughput.sh + throughput.js (k6), prepare.py, problem/, solutions/, results/
   agent_eval/  optional agent benchmark
   problems/    contest problem folders (hidden tests stay out of the public repo)
   .github/workflows/  ci.yml, healthcheck.yml
@@ -538,7 +538,7 @@ judge/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/` has the timing benchmark so far. `agent_eval/` and `problems/` are not built yet (week 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/` has the timing benchmark and the k6 throughput test, with its own public problem (`loadtest/problem/loadtest-sum`, every test a sample). `agent_eval/` and `problems/` are not built yet (week 4).
 
 ---
 
