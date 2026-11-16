@@ -56,6 +56,8 @@ Each week ends with a **gate**: a demo that must work before the next week start
 
 **Goal:** real numbers, a real contest, and a README that shows both.
 
+Started on 16 Nov with Gate 3 still open, at Aum's call (DECISIONS.md, 134). Gate 3 still has to pass before the contest.
+
 | Day | Work | What you'll learn |
 |---|---|---|
 | Mon 23 | `bootstrap.sh`, encrypted OneDrive backups, keep-alive task, reboot test. | Automation, backups, Windows services |

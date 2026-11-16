@@ -1,0 +1,18 @@
+# One worker, judge-worker@1, @2, ... Runs as root: it starts sandboxes through Docker and, as a
+# last resort, kills their runsc processes (DECISIONS.md, 72). bootstrap.sh fills in @ROOT@ and @VENV@.
+# A stop kills it like a crash: its lease runs out, and the reaper gives the job to another worker.
+[Unit]
+Description=Judge worker %i
+After=docker.service
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/judge/judge.env
+Environment=PYTHONDONTWRITEBYTECODE=1 WORKER_ID=%H-%i
+WorkingDirectory=@ROOT@
+ExecStart=@VENV@/bin/python -m worker.main
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

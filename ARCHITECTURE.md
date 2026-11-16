@@ -428,13 +428,15 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 
 ## 12. Deployment and availability
 
-**Compose services:** `cloudflared`, `api`, `postgres`, all with `restart: unless-stopped`. Sandbox images `judge-cpp` and `judge-python` are amd64.
+**Compose runs only Postgres** (`deploy/docker-compose.yml`, `restart: unless-stopped`, port bound to 127.0.0.1). `cloudflared` joins it once the public URL is chosen. Sandbox images `judge-cpp` and `judge-python` are amd64.
 
-**Workers run on the host, outside Compose** (DECISIONS.md, 72). Their last resort for a wedged sandbox is killing its runsc processes, which needs host process IDs. Each worker is one process judging one job at a time. Compose cannot restart them, so each gets a systemd unit with `Restart=always` (planned for week 4).
+**The API and the workers run on the host under systemd**, from one Python environment, `/opt/judge-venv` (DECISIONS.md, 129). Workers must be on the host anyway (72): their last resort for a wedged sandbox is killing its runsc processes, which needs host process IDs. `judge-worker@1` and `@2` run as root, one job at a time each, with `Restart=always`. `judge-api` runs as the system user `judge-api`, which has no access to Docker, so the privilege split of §10 holds. A stop kills a worker like a crash: its lease runs out and the reaper requeues the job. Settings and secrets are in `/etc/judge/judge.env`, written once and readable only by root.
 
-**Production distro:** `deploy/bootstrap.sh` creates `judge-prod` from a clean Ubuntu 24.04 image and writes its `wsl.conf` (systemd on, automount off, interop off). It then runs `setup-host.sh`, clones the repo from GitHub, restores the latest backup and starts Compose. Code reaches `judge-prod` only through `git pull`, because it cannot see `C:\`.
+**Production distro:** `deploy/create-prod-distro.ps1` (or `import-prod-distro.ps1`) creates `judge-prod` and writes its `wsl.conf` (systemd on, automount off, interop off). Code reaches it as a tar through `C:\Users\Public\judge-transfer`, because it cannot see `C:\` (DECISIONS.md, 57). `deploy/bootstrap.sh` then installs Docker and gVisor if missing, the Python environment, the settings, Postgres, the sandbox images, an optional backup to restore, the migrations and the services, and checks readiness. It is safe to run again. `deploy/RUNBOOK.md` lists the steps that need a person.
 
-**Keeping it running.** WSL stops a distro when nothing on the Windows side is using it, and systemd does not prevent that. A Task Scheduler task at logon keeps a long-lived `wsl.exe -d judge-prod` process running. WSL only runs while its Windows account is signed in, so the judge account stays signed in in the background (fast user switching) or a scheduled task runs as it. Week 4 verifies that:
+**Backups** (DECISIONS.md, 131, 132): `judge-backup.timer` runs `deploy/backup.sh` nightly at 02:30, and on the next boot if the laptop was off. It pipes `pg_dump` through `age` to a public key and keeps the newest 14 in `/var/backups/judge`. The private key never enters `judge-prod`, except during a restore. Two scheduled tasks copy new backups out: the judge account's from `judge-prod` into `C:\Users\Public\judge-transfer\backups`, then yours from there into `OneDrive\judge-backups`.
+
+**Keeping it running.** WSL stops a distro when nothing on the Windows side is using it, and systemd does not prevent that. The judge account's `judge-keepalive` task (`deploy/windows/register-tasks.ps1`) starts at logon and keeps a hidden `wsl.exe -d judge-prod -- sleep infinity` running, restarting it if it ends. WSL only runs while its Windows account is signed in, so the judge account stays signed in in the background (fast user switching). Week 4 verifies that:
 - the distro survives closing every terminal
 - everything comes back after a reboot and login
 - sleep is off while plugged in, and Windows Update is paused over contest week
@@ -523,8 +525,10 @@ judge/
   admin/       __main__.py (arguments), commands.py
   db/          migrate.py, migrations/
   scripts/     dev-test.sh, build-images.sh, demo.sh (local mock contest), mcp_reconnect.py (Gate 3's MCP demo)
-  deploy/      compose.dev.yml, setup-host.sh, wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1,
-               check-isolation.sh, images/Dockerfile. Planned: docker-compose.yml, bootstrap.sh, backup.sh, keepalive/
+  deploy/      compose.dev.yml, docker-compose.yml, setup-host.sh, bootstrap.sh, backup.sh, restore.sh,
+               systemd/ (api, worker, backup units), windows/ (scheduled tasks, backup copies), RUNBOOK.md,
+               wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1, package-for-prod.ps1,
+               prod-test.sh, check-isolation.sh, images/Dockerfile
   spike/       probes and results
   loadtest/    k6/
   agent_eval/  optional agent benchmark

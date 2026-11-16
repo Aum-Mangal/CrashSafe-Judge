@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly encrypted backup of the judge database
+
+[Timer]
+OnCalendar=*-*-* 02:30
+# If the laptop was off at 02:30, back up as soon as it is on again
+Persistent=true
+
+[Install]
+WantedBy=timers.target

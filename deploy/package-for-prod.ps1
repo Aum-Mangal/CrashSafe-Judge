@@ -1,6 +1,7 @@
 # Packages committed code for judge-prod and writes the .cmd file the judge account runs.
 #
 # 1. From your own account:  powershell -ExecutionPolicy Bypass -File deploy\package-for-prod.ps1
+#    (add -Bootstrap to start or update the running judge instead of running the tests)
 # 2. Signed in as judgehost:  double-click C:\Users\Public\judge-transfer\run-in-prod.cmd
 # 3. Back in your account:    read the result-*.txt file it wrote next to it
 #
@@ -8,7 +9,8 @@
 param(
     [string]$Ref = 'HEAD',
     [string]$Transfer = 'C:\Users\Public\judge-transfer',
-    [string]$Name = 'judge-prod'
+    [string]$Name = 'judge-prod',
+    [switch]$Bootstrap
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +25,13 @@ New-Item -ItemType Directory -Force $Transfer | Out-Null
 git -C $repo archive --format=tar "--add-virtual-file=COMMIT:$commit" -o "$Transfer\judge-src.tar" $Ref
 if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
 
+# The scripts the judge account runs on the Windows side (register-tasks.ps1 -Account Judge)
+Copy-Item "$PSScriptRoot\windows\register-tasks.ps1", "$PSScriptRoot\windows\copy-backups.ps1" $Transfer -Force
+
+# -Bootstrap starts or updates the judge itself (deploy/bootstrap.sh); without it, the tests run
+if ($Bootstrap) { $script = 'deploy/bootstrap.sh'; $doing = 'Starting the judge.' }
+else { $script = 'deploy/prod-test.sh'; $doing = 'Running the tests.' }
+
 # A new result file each run: a file judgehost wrote can't be overwritten from your account, or the reverse
 $result = "result-$commit-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
 @"
@@ -36,8 +45,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo Running the tests. The first run installs packages and builds images, so it takes several minutes...
-wsl -d $Name -u root -- bash /opt/judge/deploy/prod-test.sh > "%~dp0$result" 2>&1
+echo $doing The first run installs packages and builds images, so it takes several minutes...
+wsl -d $Name -u root -- bash /opt/judge/$script > "%~dp0$result" 2>&1
 echo Finished. The output is in %~dp0$result
 pause
 "@ | Set-Content -Encoding ascii "$Transfer\run-in-prod.cmd"

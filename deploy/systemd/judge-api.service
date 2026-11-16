@@ -1,0 +1,24 @@
+# The API, as an unprivileged user with no access to Docker (ARCHITECTURE.md §10, privilege split).
+# bootstrap.sh fills in @ROOT@ and @VENV@ when it installs this file.
+[Unit]
+Description=Judge API
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=judge-api
+Group=judge-api
+EnvironmentFile=/etc/judge/judge.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=@ROOT@
+ExecStart=@VENV@/bin/uvicorn api.app:from_env --factory --host 127.0.0.1 --port ${API_PORT}
+# Until Postgres is up, the API exits at startup: systemd starts it again
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

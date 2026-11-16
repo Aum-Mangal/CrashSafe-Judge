@@ -1,0 +1,25 @@
+# Production services in judge-prod (ARCHITECTURE.md §12), started by deploy/bootstrap.sh with
+# --env-file /etc/judge/judge.env. Only Postgres runs here: the API and the workers run on the
+# host under systemd (deploy/systemd/), from one Python environment (DECISIONS.md, 129).
+name: judge
+services:
+  postgres:
+    image: postgres:16
+    container_name: judge-postgres  # backup.sh and restore.sh find it by this name
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: judge
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?bootstrap.sh writes it to /etc/judge/judge.env}"
+      POSTGRES_DB: judge
+    ports:
+      # Only this machine: the API and the workers reach it on localhost
+      - "127.0.0.1:${PGPORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "judge"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  pgdata:

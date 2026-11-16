@@ -1,0 +1,9 @@
+# One encrypted backup, run by judge-backup.timer. bootstrap.sh fills in @ROOT@.
+[Unit]
+Description=Encrypted backup of the judge database
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash @ROOT@/deploy/backup.sh
