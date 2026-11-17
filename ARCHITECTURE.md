@@ -320,7 +320,7 @@ Measured on 13 Nov: 0.26 s from request to sandbox removed on the fast path (DEC
 - `POST /submissions` (header `Idempotency-Key`), `GET /submissions/{id}`, `DELETE /submissions/{id}`
 - `GET /contests/{id}/leaderboard`
 - `GET /health/live`, `GET /health/ready`
-- `/metrics` on an internal port only
+- No `/metrics` endpoint: `python -m admin status` and `deploy/status.sh` show the queue, leases, recent verdicts and the services, with warnings, for the one organiser on contest day (DECISIONS.md, 141)
 
 **Problem visibility:** a problem is visible only if `is_public`, or if it belongs to a contest that has started. Otherwise return 404. This applies to REST and MCP, and has a CI test. Submissions: with `contest_id`, only while that contest runs, checked in the insert's transaction; without it, public problems only (DECISIONS.md, 100).
 
@@ -421,7 +421,7 @@ The spec does not cover `tools/call` retries, so the optional `idempotency_key` 
 | Request flood | Rate limit, then per-owner cap, then global cap |
 | Laptop reboot or WSL shutdown | Keep-alive task restarts `judge-prod` at logon, containers restart, jobs recover through leases |
 | Tunnel restart | New random URL, announced to users (a stable URL fixes this, §12) |
-| Power or internet cut | Contest pauses. Jobs recover on return. Covered in the contest checklist |
+| Power or internet cut | Contest pauses. Jobs recover on return. Covered in `deploy/CONTEST.md` |
 | Distro lost or corrupted | `bootstrap.sh` + latest backup from OneDrive |
 
 ---
@@ -522,23 +522,23 @@ judge/
                agent.py (run and verify jobs, a client's own jobs)
   worker/      main.py (claim, reaper and reconcile loops), judge.py, sandbox.py, checker.py, verdict.py
   runner/      judge_runner.c, Makefile
-  admin/       __main__.py (arguments), commands.py
+  admin/       __main__.py (arguments), commands.py, report.py (status, contest-report)
   db/          migrate.py, migrations/
   scripts/     dev-test.sh, build-images.sh, demo.sh (local mock contest), mcp_reconnect.py (Gate 3's MCP demo)
   deploy/      compose.dev.yml, docker-compose.yml, setup-host.sh, bootstrap.sh, backup.sh, restore.sh,
-               systemd/ (api, worker, backup units), windows/ (scheduled tasks, backup copies), RUNBOOK.md,
+               systemd/ (api, worker, backup units), windows/ (scheduled tasks, backup copies), RUNBOOK.md, CONTEST.md, status.sh,
                wsl-prod.conf, create-prod-distro.ps1, import-prod-distro.ps1, package-for-prod.ps1,
                prod-test.sh, check-isolation.sh, images/Dockerfile
   spike/       probes and results
   loadtest/    timing.py (runsc vs runc), contention.py (what slows parallel jobs), throughput.sh + throughput.js (k6), prepare.py, problem/, solutions/, results/
   agent_eval/  optional agent benchmark
-  problems/    contest problem folders (hidden tests stay out of the public repo)
+  problems/    contest problem folders and reference solutions in solutions/, both kept out of git until the contest is over
   .github/workflows/  ci.yml, healthcheck.yml
   tests/       unit/ integration/ adversarial/ chaos/ mcp/ leakage/
   README.md  ARCHITECTURE.md  DECISIONS.md  ROADMAP.md  THREAT_MODEL.md
 ```
 
-`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/` has the timing and contention benchmarks and the k6 throughput test, with its own public problem (`loadtest/problem/loadtest-sum`, every test a sample). `agent_eval/` and `problems/` are not built yet (week 4).
+`api/` has `app.py`, `auth.py`, `accounts.py`, `ratelimit.py`, `routes.py`, `pages.py`, `leaderboard.py` and `templates/` so far, and `admin/` has `commands.py`, `report.py` and `__main__.py`. The visibility rule (`core/problems.py`) and the submission rules (`core/submissions.py`) live in `core/`, shared by REST, the pages and MCP. MCP is `api/mcp.py`, not a top-level `mcp/` package: that name would hide the SDK's own `mcp` package (DECISIONS.md, 117). `loadtest/` has the timing and contention benchmarks and the k6 throughput test, with its own public problem (`loadtest/problem/loadtest-sum`, every test a sample). `agent_eval/` and `problems/` are not built yet (week 4).
 
 ---
 

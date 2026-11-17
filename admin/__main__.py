@@ -8,7 +8,7 @@ from pathlib import Path
 
 import asyncpg
 
-from admin import commands
+from admin import commands, report
 from db.migrate import DEFAULT_DSN
 from worker.sandbox import DockerError
 
@@ -41,6 +41,11 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p = sub.add_parser("rejudge", help="judge a contest problem's submissions again")
     p.add_argument("--contest", type=int, required=True)
     p.add_argument("--problem", required=True, help="the problem's slug")
+
+    sub.add_parser("status", help="the queue, running jobs, recent verdicts and warnings, right now")
+
+    p = sub.add_parser("contest-report", help="a contest's numbers as markdown, safe to publish")
+    p.add_argument("--contest", type=int, required=True)
     return parser.parse_args(argv)
 
 
@@ -60,6 +65,13 @@ async def run(args: argparse.Namespace) -> str:
         if args.command == "create-client":
             client_id, key = await commands.create_client(conn, args.name, args.max_inflight)
             return f"created client {client_id}\nAPI key (shown only now, store it safely): {key}"
+        if args.command == "status":
+            return (await report.status(conn))[0]
+        if args.command == "contest-report":
+            try:
+                return await report.contest_report(conn, args.contest)
+            except report.NoSuchContest as e:
+                raise commands.AdminError(str(e)) from None
         new = await commands.rejudge(conn, args.contest, args.problem)
         return f"queued {len(new)} submissions for rejudging"
     finally:

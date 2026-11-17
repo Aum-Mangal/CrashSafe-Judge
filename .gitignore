@@ -4,8 +4,10 @@
 *.pem
 *.age
 
-# Hidden contest tests never go in the public repo
-problems/*/hidden/
+# Contest problems stay out of the public repo: the hidden tests always, and the statements,
+# samples and reference solutions until the contest is over (DECISIONS.md, 143)
+/problems/
+/solutions/
 
 # Backups can contain personal data
 *.dump
