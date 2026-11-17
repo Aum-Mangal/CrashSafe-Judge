@@ -137,6 +137,37 @@ async def create_contest(
     return contest_id, code
 
 
+MAX_EXTENSION_MINUTES = 240
+
+
+async def extend_contest(
+    conn: asyncpg.Connection, contest_id: int, minutes: int, reopen: bool = False
+) -> tuple[datetime, datetime]:
+    """Moves a contest's end later, after an outage (deploy/CONTEST.md). Returns (old end, new end).
+
+    Only later: shortening a running contest would cut off people who planned around its end.
+    A contest that is over opens again only with reopen=True, and only if the new end is still
+    ahead. Everything that reads the end (the submission window, the pages, registration) asks the
+    database each time, so the new end applies at once."""
+    if not 1 <= minutes <= MAX_EXTENSION_MINUTES:
+        raise AdminError(f"extend by 1 to {MAX_EXTENSION_MINUTES} minutes, not {minutes}")
+    async with conn.transaction():
+        # Locked, so two extensions at once add up instead of one overwriting the other
+        contest = await conn.fetchrow(
+            "SELECT ends_at, now() AS db_now FROM contests WHERE id = $1 FOR UPDATE", contest_id
+        )
+        if contest is None:
+            raise AdminError(f"no contest {contest_id}")
+        old_end, now = contest["ends_at"], contest["db_now"]
+        new_end = old_end + timedelta(minutes=minutes)
+        if old_end <= now and not reopen:
+            raise AdminError(f"contest {contest_id} is over. To open it again, add --reopen")
+        if new_end <= now:
+            raise AdminError(f"contest {contest_id} would still be over after {minutes} more minutes")
+        await conn.execute("UPDATE contests SET ends_at = $2 WHERE id = $1", contest_id, new_end)
+    return old_end, new_end
+
+
 async def create_client(conn: asyncpg.Connection, name: str, max_inflight: int = 5) -> tuple[int, str]:
     """An API key for an MCP client. Returns (client id, key). The key is shown only this once:
     the database keeps its sha256.

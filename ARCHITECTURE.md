@@ -339,8 +339,10 @@ Plain HTML from the same process, with no JavaScript: contest list, log in, regi
 - `import-problem <folder>`: a folder named after the slug, with `problem.toml`, `statement.md`, `samples/` and `hidden/` (`1.in`, `1.out`, ...). Re-importing replaces the tests
 - `check-problem <folder> <solution> [--expect VERDICT]`: judges a `.cpp` or `.py` solution against every test in the folder, in real sandboxes, with no database (126). It prints each test's verdict, CPU, wall time and memory. The exit code is 0 only if the verdict is the expected one (AC by default) and an accepted solution used at most half the time limit
 - `create-contest --title --start '2026-11-28 10:00' --minutes --problems a,b`, which prints a random invite code
+- `extend-contest --contest <id> --minutes <n> [--reopen]`: moves a contest's end later by 1 to 240 minutes, after an outage. A contest that is over opens again only with `--reopen`. The row is locked while it decides, so two extensions add up (DECISIONS.md, 144)
 - `create-client --name`, which prints an API key once and stores its sha256
 - `rejudge --problem <slug> --contest <id>`: creates new jobs with `rejudge_of` set, the original `submitted_at` and priority 1, and marks the old ones `superseded` (cancelling any still queued or running). Old results stay for audit. Rejudge jobs don't count against the caps
+- `status` and `contest-report --contest <id>`: the live picture with warnings, and the contest's numbers to publish (DECISIONS.md, 141)
 
 ### MCP `/mcp` (Streamable HTTP, stateless)
 - **Auth:** Bearer API key resolves to an `api_clients` row. Keys are issued by hand with the admin CLI. `RequireApiKey` in `api/mcp.py` checks the key before the SDK sees the request: a missing or unknown one gets 401 (DECISIONS.md, 118).

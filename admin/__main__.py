@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -34,6 +35,12 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--tz", default="Asia/Kolkata")
     p.add_argument("--invite-code", help="default: a random one")
 
+    p = sub.add_parser("extend-contest", help="move a contest's end later, after an outage")
+    p.add_argument("--contest", type=int, required=True)
+    p.add_argument("--minutes", type=int, required=True)
+    p.add_argument("--reopen", action="store_true", help="also open a contest that is already over")
+    p.add_argument("--tz", default="Asia/Kolkata", help="the time zone the new end is printed in")
+
     p = sub.add_parser("create-client", help="issue an API key for an MCP client")
     p.add_argument("--name", required=True)
     p.add_argument("--max-inflight", type=int, default=5)
@@ -62,6 +69,11 @@ async def run(args: argparse.Namespace) -> str:
                 conn, args.title, args.start, args.minutes, slugs, args.tz, args.invite_code
             )
             return f"created contest {contest_id}\ninvite code: {code}"
+        if args.command == "extend-contest":
+            old, new = await commands.extend_contest(conn, args.contest, args.minutes, args.reopen)
+            tz = ZoneInfo(args.tz)
+            return (f"contest {args.contest} now ends at {new.astimezone(tz):%Y-%m-%d %H:%M} {args.tz}, "
+                    f"{args.minutes} minutes after {old.astimezone(tz):%H:%M}\nAnnounce the new end to the contestants.")
         if args.command == "create-client":
             client_id, key = await commands.create_client(conn, args.name, args.max_inflight)
             return f"created client {client_id}\nAPI key (shown only now, store it safely): {key}"

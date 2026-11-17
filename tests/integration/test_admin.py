@@ -4,10 +4,13 @@ import asyncio
 import hashlib
 import os
 import sys
+from datetime import timedelta
 
+import asyncpg
 import pytest
 
 from admin import commands
+from core import submissions
 from core.jobs import NewJob, create_job
 from core.leaderboard import board
 from helpers import ROOT, insert_problem, make_contest
@@ -189,6 +192,77 @@ async def test_rejudging_a_problem_not_in_the_contest_changes_nothing(db):
         await commands.rejudge(db, contest, "nope")
 
 
+# --- extend-contest
+
+
+async def contest_end(db, contest):
+    return await db.fetchval("SELECT ends_at FROM contests WHERE id = $1", contest)
+
+
+async def test_extend_moves_a_running_contests_end_later(db):
+    contest = await make_contest(db, -600, 600)
+    before = await contest_end(db, contest)
+    old, new = await commands.extend_contest(db, contest, 15)
+    assert old == before and new - old == timedelta(minutes=15)
+    assert await contest_end(db, contest) == new
+
+
+async def test_reopen_lets_submissions_in_again_at_once(db):
+    problem = await insert_problem(db, [("1\n", "1\n", True)])
+    slug = await db.fetchval("SELECT slug FROM problems WHERE id = $1", problem)
+    contest = await make_contest(db, -3600, -60, [problem])
+    user = await db.fetchval(
+        "INSERT INTO users (email, password_hash, display_name) VALUES ('a@b.test', 'x', 'A') RETURNING id"
+    )
+    with pytest.raises(submissions.NotAllowed):
+        await submissions.submit(db, user, slug, "python", "print(1)", contest)
+    await commands.extend_contest(db, contest, 30, reopen=True)
+    _, created = await submissions.submit(db, user, slug, "python", "print(1)", contest)
+    assert created
+
+
+async def test_a_contest_that_is_over_needs_reopen(db):
+    contest = await make_contest(db, -3600, -60)
+    before = await contest_end(db, contest)
+    with pytest.raises(commands.AdminError, match="is over. To open it again, add --reopen"):
+        await commands.extend_contest(db, contest, 30)
+    # Over by an hour: 30 more minutes would still leave it over
+    contest = await make_contest(db, -7200, -3600, code="other")
+    with pytest.raises(commands.AdminError, match="would still be over after 30 more minutes"):
+        await commands.extend_contest(db, contest, 30, reopen=True)
+    assert await db.fetchval("SELECT count(*) FROM contests WHERE ends_at > now()") == 0
+    assert await contest_end(db, 1) == before
+
+
+@pytest.mark.parametrize("minutes", [0, -5, commands.MAX_EXTENSION_MINUTES + 1])
+async def test_extend_only_later_and_not_by_a_typo(db, minutes):
+    contest = await make_contest(db, -600, 600)
+    with pytest.raises(commands.AdminError, match="extend by 1 to 240 minutes"):
+        await commands.extend_contest(db, contest, minutes)
+
+
+async def test_extend_unknown_contest(db):
+    with pytest.raises(commands.AdminError, match="no contest 99"):
+        await commands.extend_contest(db, 99, 10)
+
+
+async def test_two_extensions_at_once_add_up(db, dsn):
+    contest = await make_contest(db, -600, 600)
+    before = await contest_end(db, contest)
+    other = await asyncpg.connect(dsn)
+    try:
+        # Another organiser's extension holds the row while ours starts
+        async with db.transaction():
+            await db.execute("SELECT 1 FROM contests WHERE id = $1 FOR UPDATE", contest)
+            ours = asyncio.create_task(commands.extend_contest(other, contest, 20))
+            await asyncio.sleep(0.3)
+            await db.execute("UPDATE contests SET ends_at = ends_at + interval '10 minutes' WHERE id = $1", contest)
+        await ours
+    finally:
+        await other.close()
+    assert await contest_end(db, contest) - before == timedelta(minutes=30)
+
+
 # --- The command line itself
 
 
@@ -210,3 +284,12 @@ async def test_the_command_line(dsn, tmp_path):
     assert (code, out) == (0, "created contest 1\ninvite code: abc\n")
     code, out = await cli("create-contest", "--title", "Bad", "--start", "tomorrow", "--minutes", "90", "--problems", "sum")
     assert code == 1 and "error: start must look like" in out
+
+    code, out = await cli("create-contest", "--title", "Later", "--start", "2030-01-01 10:00", "--minutes", "60",
+                          "--problems", "sum", "--invite-code", "def")
+    later = out.split()[2]
+    assert await cli("extend-contest", "--contest", later, "--minutes", "15") == (
+        0, f"contest {later} now ends at 2030-01-01 11:15 Asia/Kolkata, 15 minutes after 11:00\n"
+           "Announce the new end to the contestants.\n")
+    code, out = await cli("extend-contest", "--contest", later, "--minutes", "500")
+    assert (code, out) == (1, "error: extend by 1 to 240 minutes, not 500\n")

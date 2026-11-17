@@ -42,7 +42,7 @@ Setting up and recovering the judge itself is in [RUNBOOK.md](RUNBOOK.md).
 - [ ] The reboot test and the disaster-recovery drill done (RUNBOOK.md §4, §5).
 - [ ] Backups reaching `OneDrive\judge-backups` every night.
 - [ ] Windows Update paused. Sleep set to Never while plugged in.
-- [ ] **Decide now** what happens to the contest's length if the laptop loses power or internet. There is no command to move a contest's end yet, so either accept the lost minutes or add one before the code freezes.
+- [ ] **Decide now**, and tell the contestants, what happens if the judge is down during the contest: for example, "the end moves by the minutes lost, rounded up to 5". `extend-contest` (below) does it.
 - [ ] Code frozen. Note the commit: `git log -1 --format=%h`.
 
 ## The day before
@@ -78,7 +78,8 @@ Run `deploy/status.sh` every 10 minutes, or keep it on screen with `watch -n 30 
 | A wrong `.out` file reported by contestants | The test data is wrong | Fix the folder, `check-problem` it, `import-problem` it, then `python -m admin rejudge --contest <id> --problem <slug>`. Announce it |
 | `near the cap of 500` | The queue is full and new submissions get 429 | The judge is overloaded. Contestants' retries will get in as it drains. Don't add workers past 4 |
 | The public URL stops answering | The tunnel restarted, or the internet is down | (Filled in when the public URL is built.) |
-| The laptop restarted or lost power | Everything stopped | Plug in, sign in to the judge account, wait for `judge-keepalive`, then `status.sh`. Jobs from before finish on their own. Apply the decision made the week before about the lost minutes |
+| The laptop restarted or lost power | Everything stopped | Plug in, sign in to the judge account, wait for `judge-keepalive`, then `status.sh`. Jobs from before finish on their own. Note how many minutes were lost, then move the end (below) |
+| Minutes lost to an outage | Contestants couldn't submit | `python -m admin extend-contest --contest <id> --minutes <n>`, and announce the new end it prints. If the contest's end already passed during the outage, add `--reopen`. It only moves the end later, by 1 to 240 minutes, and applies at once |
 | `the disk is N% full` | Old sandboxes or images, or logs | `docker system df`, then `journalctl --vacuum-size=200M` |
 
 ## After the contest
